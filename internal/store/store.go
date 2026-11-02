@@ -88,6 +88,16 @@ CREATE TABLE IF NOT EXISTS invites(
 	uses         INTEGER NOT NULL DEFAULT 0,
 	last_used_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS roles(
+	id       INTEGER PRIMARY KEY AUTOINCREMENT,
+	name     TEXT NOT NULL,
+	color    TEXT NOT NULL DEFAULT '#99aab5',
+	position INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS user_roles(
+	nick    TEXT PRIMARY KEY, -- ник в нижнем регистре; одна роль на человека
+	role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS avatars(
 	nick       TEXT PRIMARY KEY, -- ник в нижнем регистре
 	url        TEXT NOT NULL,
@@ -232,6 +242,97 @@ func (s *Store) UseInvite(ctx context.Context, code string) (bool, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// ---------- roles ----------
+
+type Role struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Color    string `json:"color"`
+	Position int    `json:"position"`
+}
+
+// Roles — роли по порядку и кому какая назначена (ник в нижнем регистре -> id роли).
+func (s *Store) Roles(ctx context.Context) ([]Role, map[string]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, color, position FROM roles ORDER BY position, id`)
+	if err != nil {
+		return nil, nil, err
+	}
+	roles := []Role{}
+	for rows.Next() {
+		var r Role
+		if err := rows.Scan(&r.ID, &r.Name, &r.Color, &r.Position); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		roles = append(roles, r)
+	}
+	rows.Close()
+	rows, err = s.db.QueryContext(ctx, `SELECT nick, role_id FROM user_roles`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	assigned := map[string]int64{}
+	for rows.Next() {
+		var nick string
+		var id int64
+		if err := rows.Scan(&nick, &id); err != nil {
+			return nil, nil, err
+		}
+		assigned[nick] = id
+	}
+	return roles, assigned, rows.Err()
+}
+
+func (s *Store) CreateRole(ctx context.Context, name, color string) error {
+	var pos int
+	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(position),0)+1 FROM roles`).Scan(&pos)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO roles(name,color,position) VALUES(?,?,?)`, name, color, pos)
+	return err
+}
+
+func (s *Store) DeleteRole(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM roles WHERE id=?`, id)
+	return err
+}
+
+// MoveRole сдвигает роль выше (dir<0) или ниже (dir>0) — от порядка зависит порядок групп справа.
+func (s *Store) MoveRole(ctx context.Context, id int64, dir int) error {
+	roles, _, err := s.Roles(ctx)
+	if err != nil {
+		return err
+	}
+	idx := -1
+	for i, r := range roles {
+		if r.ID == id {
+			idx = i
+		}
+	}
+	j := idx + dir
+	if idx < 0 || j < 0 || j >= len(roles) {
+		return nil
+	}
+	roles[idx], roles[j] = roles[j], roles[idx]
+	for i, r := range roles {
+		if _, err := s.db.ExecContext(ctx, `UPDATE roles SET position=? WHERE id=?`, i, r.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AssignRole назначает нику роль; roleID=0 — снять.
+func (s *Store) AssignRole(ctx context.Context, nick string, roleID int64) error {
+	nick = strings.ToLower(nick)
+	if roleID == 0 {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM user_roles WHERE nick=?`, nick)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO user_roles(nick,role_id) VALUES(?,?) ON CONFLICT(nick) DO UPDATE SET role_id=excluded.role_id`, nick, roleID)
+	return err
 }
 
 // ---------- avatars ----------

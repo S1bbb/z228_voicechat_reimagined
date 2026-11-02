@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -181,4 +182,50 @@ func (h *Hub) handleInvites(s *session, m *inMsg) {
 		}
 	}
 	h.sendInvites(s)
+}
+
+var roleColor = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+// handleRoles — роли: создание, удаление, порядок, назначение (одна роль на ник).
+func (h *Hub) handleRoles(s *session, m *inMsg) {
+	ctx := context.Background()
+	st := h.opts.Store
+	var err error
+	switch m.Type {
+	case "role-create":
+		name := strings.Join(strings.Fields(m.Name), " ")
+		if r := []rune(name); len(r) > 32 {
+			name = string(r[:32])
+		}
+		color := strings.TrimSpace(m.Text)
+		if !roleColor.MatchString(color) {
+			color = "#99aab5"
+		}
+		if name == "" {
+			s.sendError("Укажите название роли.")
+			return
+		}
+		err = st.CreateRole(ctx, name, strings.ToLower(color))
+	case "role-delete":
+		err = st.DeleteRole(ctx, m.ID)
+	case "role-move":
+		err = st.MoveRole(ctx, m.ID, m.Dir)
+	case "role-assign":
+		nick, ok := normalizeNick(m.Name)
+		if !ok {
+			s.sendError("Некорректный ник.")
+			return
+		}
+		err = st.AssignRole(ctx, nick, m.ID)
+	}
+	if err != nil {
+		log.Printf("roles: %v", err)
+		s.sendError("Не удалось изменить роли.")
+		return
+	}
+	roles, userRoles, err := st.Roles(ctx)
+	if err != nil {
+		return
+	}
+	h.broadcast("roles", map[string]any{"roles": roles, "userRoles": userRoles}, nil)
 }

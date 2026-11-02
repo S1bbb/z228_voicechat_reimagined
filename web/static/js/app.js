@@ -253,6 +253,12 @@ function onMessage(m) {
       renderAll();
       if (settingsSection === "admin") renderSettings();
       return;
+    case "roles":
+      S.roles = m.roles || [];
+      S.userRoles = m.userRoles || {};
+      renderMembers();
+      if (settingsSection === "admin") renderSettings();
+      return;
     case "avatar":
       if (m.url) S.avatars[m.nickname] = m.url;
       else delete S.avatars[m.nickname];
@@ -282,6 +288,8 @@ function onReady(m) {
   S.server = m.server || S.server;
   S.channels = m.channels || [];
   S.avatars = m.avatars || {};
+  S.roles = m.roles || [];
+  S.userRoles = m.userRoles || {};
   S.users = m.users || [];
   S.maxUploadBytes = m.maxUploadBytes || S.maxUploadBytes;
   S.msgs.clear();
@@ -742,9 +750,9 @@ function renderVoicePanel() {
 function renderMembers() {
   const root = $("#members");
   root.innerHTML = "";
-  const admins = S.users.filter((u) => u.admin);
-  const rest = S.users.filter((u) => !u.admin);
-  const section = (title, list) => {
+  // как в Discord: группы по ролям (в порядке ролей), без роли — «В сети»
+  const roleOf = (u) => (S.roles || []).find((r) => r.id === (S.userRoles || {})[u.nickname.toLowerCase()]);
+  const section = (title, list, color) => {
     if (!list.length) return;
     root.append(h("div.category", null, h("span", null, `${title} — ${list.length}`)));
     for (const u of list) {
@@ -756,7 +764,7 @@ function renderMembers() {
           h("span.avatar-wrap", null, avatarFor(u, 32), h("span.status-dot")),
           h(
             "span.name",
-            null,
+            color ? { style: { color } } : null,
             u.nickname,
             ch ? h("span.sub", null, (u.screen ? "🔴 Стримит в " : "🔊 ") + ch.name) : null
           ),
@@ -765,8 +773,8 @@ function renderMembers() {
       );
     }
   };
-  section("Администраторы", admins);
-  section("В сети", rest);
+  for (const r of S.roles || []) section(r.name, S.users.filter((u) => roleOf(u) === r), r.color);
+  section("В сети", S.users.filter((u) => !roleOf(u)));
 }
 
 // ---------- индикатор качества связи ----------
@@ -1693,6 +1701,16 @@ function userMenu(e, u) {
   }
   if (S.admin && !isMe && !u.offline) {
     menu.append(h("div.menu-sep"));
+    if ((S.roles || []).length) {
+      const cur = (S.userRoles || {})[key] || 0;
+      menu.append(h("div.menu-label", null, "Роль"));
+      for (const r of [{ id: 0, name: "Без роли" }, ...S.roles]) {
+        menu.append(
+          menuItem(r.name, () => (send("role-assign", { name: u.nickname, id: r.id }), closeLayer()), { check: cur === r.id })
+        );
+      }
+      menu.append(h("div.menu-sep"));
+    }
     menu.append(menuItem("Заглушить для всех", () => (send("server-mute", { sessionId: u.id, value: !u.serverMuted }), closeLayer()), { check: !!u.serverMuted }));
     if (u.voiceChannelId) menu.append(menuItem("Отключить от голоса", () => send("disconnect-voice", { sessionId: u.id }), { danger: true }));
     menu.append(
@@ -2237,6 +2255,7 @@ function settingsAdmin(c) {
     return;
   }
   settingsAccess(c);
+  settingsRoles(c);
   c.append(h("h3", null, "Каналы"));
   const list = h("div.admin-list");
   for (const ch of S.channels) {
@@ -2279,6 +2298,51 @@ function settingsAdmin(c) {
     );
   }
   c.append(ul, h("div", { style: { marginTop: "24px" } }, h("button.btn", { onclick: () => send("admin-logout") }, "Выйти из режима администратора")));
+}
+
+// ---------- роли ----------
+
+function settingsRoles(c) {
+  c.append(h("h3", null, "Роли"));
+  const list = h("div.admin-list");
+  for (const r of S.roles || []) {
+    const count = Object.values(S.userRoles || {}).filter((id) => id === r.id).length;
+    list.append(
+      h(
+        "div.admin-row",
+        null,
+        h("span.role-dot", { style: { background: r.color } }),
+        h("span.name", { style: { color: r.color, fontWeight: 600 } }, r.name, h("span.muted.small", { style: { fontWeight: 400 } }, `  · ${count}`)),
+        h("button.icon-btn", { html: icon("up", 18), title: "Выше", onclick: () => send("role-move", { id: r.id, dir: -1 }) }),
+        h("button.icon-btn", { html: icon("down", 18), title: "Ниже", onclick: () => send("role-move", { id: r.id, dir: 1 }) }),
+        h("button.icon-btn.danger", {
+          html: icon("trash", 18),
+          title: "Удалить роль",
+          onclick: () =>
+            modal({
+              title: "Удалить роль",
+              body: h("p", null, `Удалить роль «${r.name}»? У всех, у кого она есть, роль снимется.`),
+              okText: "Удалить",
+              danger: true,
+              onOk: () => send("role-delete", { id: r.id }),
+            }),
+        })
+      )
+    );
+  }
+  if ((S.roles || []).length) c.append(list);
+  const name = h("input.input", { placeholder: "Название роли", maxlength: 32 });
+  const color = h("input.role-color", { type: "color", value: "#22d3ee", title: "Цвет роли" });
+  const create = () => {
+    if (!name.value.trim()) return;
+    send("role-create", { name: name.value, text: color.value });
+    name.value = "";
+  };
+  name.onkeydown = (e) => e.key === "Enter" && create();
+  c.append(
+    h("div", { style: { display: "flex", gap: "8px", marginTop: "12px", maxWidth: "560px", alignItems: "center" } }, color, name, h("button.btn.btn-primary", { onclick: create }, "Создать роль")),
+    h("p.muted.small", { style: { marginTop: "8px" } }, "Назначить роль: клик по человеку в списке справа → «Роль». Справа участники группируются по ролям в этом порядке.")
+  );
 }
 
 // ---------- ключи доступа ----------

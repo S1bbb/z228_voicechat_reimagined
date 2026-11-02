@@ -381,6 +381,10 @@ func (h *Hub) register(s *session, m *inMsg) bool {
 	if err != nil {
 		log.Printf("channels: %v", err)
 	}
+	roles, userRoles, err := h.opts.Store.Roles(context.Background())
+	if err != nil {
+		log.Printf("roles: %v", err)
+	}
 	avatars, err := h.opts.Store.Avatars(context.Background())
 	if err != nil {
 		log.Printf("avatars: %v", err)
@@ -398,6 +402,8 @@ func (h *Hub) register(s *session, m *inMsg) bool {
 		"users":          users,
 		"maxUploadBytes": h.opts.MaxUploadBytes,
 		"avatars":        avatars,
+		"roles":          roles,
+		"userRoles":      userRoles,
 	})
 	log.Printf("+ %s", nick)
 	h.broadcastPresence()
@@ -726,7 +732,7 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		h.broadcastPresence()
 
 	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute",
-		"invites", "invite-create", "invite-delete":
+		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign":
 		h.mu.Lock()
 		admin := s.admin
 		h.mu.Unlock()
@@ -736,6 +742,10 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		}
 		if strings.HasPrefix(m.Type, "invite") {
 			h.handleInvites(s, m)
+			return
+		}
+		if strings.HasPrefix(m.Type, "role-") {
+			h.handleRoles(s, m)
 			return
 		}
 		h.handleAdmin(s, m)
