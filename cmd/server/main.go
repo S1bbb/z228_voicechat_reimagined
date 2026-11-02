@@ -67,6 +67,7 @@ func main() {
 	fl.IntVar(&cfg.RTCPort, "rtc-port", cfg.RTCPort, "порт для голоса (UDP + TCP)")
 	fl.StringVar(&cfg.DataDir, "data", cfg.DataDir, "каталог данных (БД, загрузки, сертификаты)")
 	fl.StringVar(&cfg.ServerName, "name", cfg.ServerName, "название сервера")
+	fl.StringVar(&cfg.ServerSlogan, "slogan", cfg.ServerSlogan, "подпись под названием сервера")
 	fl.StringVar(&cfg.ServerPassword, "password", cfg.ServerPassword, "пароль для входа на сервер (пусто — без пароля)")
 	fl.StringVar(&cfg.AdminPassword, "admin-password", cfg.AdminPassword, "пароль администратора (пусто — сгенерировать)")
 	fl.StringVar(&cfg.TLSDomain, "domain", cfg.TLSDomain, "домен для бесплатного сертификата Let's Encrypt")
@@ -108,6 +109,7 @@ func main() {
 		Store:          st,
 		SFU:            media,
 		ServerName:     cfg.ServerName,
+		ServerSlogan:   cfg.ServerSlogan,
 		ServerPassword: cfg.ServerPassword,
 		AdminPassword:  adminPassword,
 		UploadDir:      uploadDir,

@@ -10,6 +10,15 @@ export function rtcConstructor() {
 }
 
 /** Что умеет браузер — отправляем на сервер, когда голос не запускается. */
+/** Оценка качества: 3 — хорошо, 2 — так себе, 1 — плохо, 0 — нет данных. */
+export function qualityLevel(q) {
+  if (!q || q.rtt == null) return 0;
+  const loss = Math.max(q.downLoss || 0, q.upLoss || 0);
+  if (q.rtt < 150 && loss < 2) return 3;
+  if (q.rtt < 300 && loss < 8) return 2;
+  return 1;
+}
+
 export function rtcDiagnostics() {
   const md = navigator.mediaDevices;
   return {
@@ -179,6 +188,8 @@ export class Voice {
     this.pc = null;
     this.joinId = "";
     this.channelId = 0;
+    this.prevStats = null;
+    this.lastStats = null;
     this.pendingIce = [];
     this.chain = Promise.resolve();
     this.stopScreen(false);
@@ -466,6 +477,80 @@ export class Voice {
       const t = this.sendTransceiver("1");
       if (t) t.sender.replaceTrack(null).catch(() => {});
     }
+  }
+
+  // ---------- качество связи ----------
+
+  /**
+   * Снимок качества соединения с сервером: пинг, потери на приём/передачу, джиттер, протокол и битрейт.
+   * Потери считаются по приращению счётчиков с прошлого вызова.
+   */
+  async collectStats() {
+    const pc = this.pc;
+    if (!pc || pc.connectionState !== "connected") return null;
+    const report = await pc.getStats();
+    const prev = this.prevStats || {};
+    const now = performance.now();
+    let rtt = null;
+    let proto = "";
+    let candType = "";
+    let recv = 0;
+    let lost = 0;
+    let jitter = 0;
+    let jitterN = 0;
+    let bytesIn = 0;
+    let bytesOut = 0;
+    let upLoss = null;
+    const byId = new Map();
+    report.forEach((r) => byId.set(r.id, r));
+    report.forEach((r) => {
+      if (r.type === "transport" && r.selectedCandidatePairId) {
+        const pair = byId.get(r.selectedCandidatePairId);
+        if (pair && pair.currentRoundTripTime != null) rtt = pair.currentRoundTripTime * 1000;
+        const local = pair && byId.get(pair.localCandidateId);
+        if (local) {
+          proto = local.protocol || "";
+          candType = local.candidateType || "";
+        }
+      }
+      if (r.type === "candidate-pair" && r.nominated && r.state === "succeeded" && rtt == null && r.currentRoundTripTime != null) {
+        rtt = r.currentRoundTripTime * 1000;
+        const local = byId.get(r.localCandidateId);
+        if (local && !proto) {
+          proto = local.protocol || "";
+          candType = local.candidateType || "";
+        }
+      }
+      if (r.type === "inbound-rtp" && r.kind === "audio") {
+        recv += r.packetsReceived || 0;
+        lost += Math.max(0, r.packetsLost || 0);
+        if (r.jitter != null) {
+          jitter += r.jitter * 1000;
+          jitterN++;
+        }
+      }
+      if (r.type === "inbound-rtp") bytesIn += r.bytesReceived || 0;
+      if (r.type === "outbound-rtp") bytesOut += r.bytesSent || 0;
+      // отчёт сервера о том, сколько наших пакетов потерялось по дороге к нему
+      if (r.type === "remote-inbound-rtp" && r.kind === "audio" && r.fractionLost != null) upLoss = r.fractionLost * 100;
+    });
+    const dRecv = recv - (prev.recv || 0);
+    const dLost = lost - (prev.lost || 0);
+    const dt = prev.t ? (now - prev.t) / 1000 : 0;
+    const downLoss = dRecv + dLost > 20 ? (dLost / (dRecv + dLost)) * 100 : null;
+    const out = {
+      rtt: rtt == null ? null : Math.round(rtt),
+      downLoss: downLoss == null ? null : Math.max(0, +downLoss.toFixed(1)),
+      upLoss: upLoss == null ? null : +upLoss.toFixed(1),
+      jitter: jitterN ? Math.round(jitter / jitterN) : null,
+      proto,
+      candType,
+      kbpsIn: dt ? Math.round(((bytesIn - (prev.bytesIn || 0)) * 8) / dt / 1000) : null,
+      kbpsOut: dt ? Math.round(((bytesOut - (prev.bytesOut || 0)) * 8) / dt / 1000) : null,
+    };
+    this.prevStats = { recv, lost, bytesIn, bytesOut, t: now };
+    this.lastStats = out;
+    return out;
   }
 
   // ---------- индикация речи ----------

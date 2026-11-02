@@ -50,7 +50,8 @@ z228 [флаги]
   -https-port 3443   HTTPS-порт (0 — выключить, например за reverse proxy)
   -rtc-port 50000    порт голоса (UDP + TCP)
   -data ./data       папка данных
-  -name z228         название сервера
+  -name ZALUPA228    название сервера
+  -slogan "..."      подпись под названием в шапке
   -password ...      пароль для входа на сервер (по умолчанию без пароля)
   -admin-password .. пароль администратора (по умолчанию генерируется и сохраняется)
   -public-ip a,b     дополнительные адреса для голоса (внешний IP, IP VPN), через запятую
@@ -59,7 +60,7 @@ z228 [флаги]
 ```
 
 У каждого флага есть переменная окружения: `PORT`, `HTTPS_PORT`, `RTC_PORT`, `DATA_DIR`, `SERVER_NAME`,
-`SERVER_PASSWORD`, `ADMIN_PASSWORD`, `RTC_PUBLIC_IP`, `TLS_DOMAIN`, а также `TLS_CERT_FILE`/`TLS_KEY_FILE`
+`SERVER_SLOGAN`, `SERVER_PASSWORD`, `ADMIN_PASSWORD`, `RTC_PUBLIC_IP`, `TLS_DOMAIN`, а также `TLS_CERT_FILE`/`TLS_KEY_FILE`
 (свой сертификат), `TLS_EMAIL`, `CERT_EXTRA_IPS`, `MAX_UPLOAD_MB` (по умолчанию 25), `RTC_AUTO_PUBLIC_IP`,
 `RTC_STUN_SERVER`, `LISTEN_HOST`, `WEB_DIR` (отдавать фронтенд с диска, для разработки: `-web-dir web/static`).
 

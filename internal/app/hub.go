@@ -33,6 +33,7 @@ type Options struct {
 	Store          *store.Store
 	SFU            *sfu.SFU
 	ServerName     string
+	ServerSlogan   string
 	ServerPassword string
 	AdminPassword  string
 	UploadDir      string
@@ -72,7 +73,11 @@ type session struct {
 	deafened     bool
 	screen       bool
 	camera       bool
-	serverMuted  bool // заглушён админом (держится до переподключения ника)
+	serverMuted  bool    // заглушён админом (держится до переподключения ника)
+	qRTT         int     // качество связи с сервером по словам клиента: пинг, мс (-1 — нет данных)
+	qLoss        float64 // потери пакетов, %
+	qJitter      int
+	qAt          time.Time
 	peer         *sfu.Peer
 	joinID       string // id текущего входа в голос; сигналинг со старым id игнорируется
 
@@ -103,6 +108,9 @@ type inMsg struct {
 	Dir         int                      `json:"dir"`
 	SessionID   string                   `json:"sessionId"`
 	JoinID      string                   `json:"joinId"`
+	Rtt         *float64                 `json:"rtt"`
+	Loss        *float64                 `json:"loss"`
+	Jitter      *float64                 `json:"jitter"`
 	Muted       *bool                    `json:"muted"`
 	Deafened    *bool                    `json:"deafened"`
 	Screen      *bool                    `json:"screen"`
@@ -114,15 +122,29 @@ type inMsg struct {
 }
 
 type userView struct {
-	ID           string `json:"id"`
-	Nickname     string `json:"nickname"`
-	VoiceChannel int64  `json:"voiceChannelId"`
-	Muted        bool   `json:"muted"`
-	Deafened     bool   `json:"deafened"`
-	Screen       bool   `json:"screen"`
-	Camera       bool   `json:"camera"`
-	Admin        bool   `json:"admin"`
-	ServerMuted  bool   `json:"serverMuted"`
+	ID           string   `json:"id"`
+	Nickname     string   `json:"nickname"`
+	VoiceChannel int64    `json:"voiceChannelId"`
+	Muted        bool     `json:"muted"`
+	Deafened     bool     `json:"deafened"`
+	Screen       bool     `json:"screen"`
+	Camera       bool     `json:"camera"`
+	Admin        bool     `json:"admin"`
+	ServerMuted  bool     `json:"serverMuted"`
+	Quality      *quality `json:"quality,omitempty"`
+}
+
+type quality struct {
+	RTT    int     `json:"rtt"`
+	Loss   float64 `json:"loss"`
+	Jitter int     `json:"jitter"`
+}
+
+func (s *session) qualityLocked() *quality {
+	if s.voiceChannel == 0 || s.qAt.IsZero() || time.Since(s.qAt) > 30*time.Second {
+		return nil
+	}
+	return &quality{RTT: s.qRTT, Loss: s.qLoss, Jitter: s.qJitter}
 }
 
 var upgrader = websocket.Upgrader{
@@ -371,7 +393,7 @@ func (h *Hub) register(s *session, m *inMsg) bool {
 		"sessionId":      s.id,
 		"nickname":       nick,
 		"admin":          isAdmin,
-		"server":         map[string]any{"name": h.opts.ServerName},
+		"server":         map[string]any{"name": h.opts.ServerName, "slogan": h.opts.ServerSlogan},
 		"channels":       channels,
 		"users":          users,
 		"maxUploadBytes": h.opts.MaxUploadBytes,
@@ -433,7 +455,7 @@ func (h *Hub) usersLocked() []userView {
 	for _, s := range h.sessions {
 		out = append(out, userView{
 			ID: s.id, Nickname: s.nickname, VoiceChannel: s.voiceChannel,
-			Muted: s.muted, Deafened: s.deafened, Screen: s.screen, Camera: s.camera, Admin: s.admin, ServerMuted: s.serverMuted,
+			Muted: s.muted, Deafened: s.deafened, Screen: s.screen, Camera: s.camera, Admin: s.admin, ServerMuted: s.serverMuted, Quality: s.qualityLocked(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Nickname) < strings.ToLower(out[j].Nickname) })
@@ -599,6 +621,27 @@ func (h *Hub) handle(s *session, m *inMsg) {
 			log.Printf("диагностика %s: %s", s.nickname, d)
 		}
 
+	case "voice-quality":
+		// клиент раз в несколько секунд сообщает пинг и потери до сервера — показываем всем
+		h.mu.Lock()
+		if s.voiceChannel == 0 || time.Since(s.qAt) < 2*time.Second || m.Rtt == nil {
+			h.mu.Unlock()
+			return
+		}
+		s.qRTT = clampInt(int(*m.Rtt), 0, 10000)
+		s.qLoss = 0
+		if m.Loss != nil {
+			s.qLoss = float64(clampInt(int(*m.Loss*10), 0, 1000)) / 10
+		}
+		s.qJitter = 0
+		if m.Jitter != nil {
+			s.qJitter = clampInt(int(*m.Jitter), 0, 10000)
+		}
+		s.qAt = time.Now()
+		q := s.qualityLocked()
+		h.mu.Unlock()
+		h.broadcast("quality", map[string]any{"userId": s.id, "quality": q}, nil)
+
 	case "typing":
 		h.broadcast("typing", map[string]any{"channelId": m.ChannelID, "userId": s.id, "nickname": s.nickname}, s)
 
@@ -727,6 +770,7 @@ func (h *Hub) voiceJoin(s *session, channelID int64, joinID string) {
 		changed := s.peer == peer && peer != nil
 		if changed {
 			s.peer = nil
+			s.qAt = time.Time{}
 			s.voiceChannel = 0
 			s.screen = false
 			s.camera = false
@@ -905,12 +949,8 @@ func clampText(t string) string {
 	return t
 }
 
-func channelName(name, kind string) string {
+func channelName(name, _ string) string {
 	name = strings.Join(strings.Fields(name), " ")
-	if kind == "text" {
-		// как в Discord: текстовые каналы — строчными и через дефис
-		name = strings.ToLower(strings.ReplaceAll(name, " ", "-"))
-	}
 	if r := []rune(name); len(r) > 50 {
 		name = string(r[:50])
 	}

@@ -1,6 +1,6 @@
 import { $, $$, h, avatar, avatarColor, setAvatarSource, lsGet, lsSet, randomId, renderMarkdown, mentionsMe, isEmojiOnly, fmtTime, fmtFull, fmtStamp, fmtDay, sameDay, fmtSize } from "./util.js";
 import { icon } from "./icons.js";
-import { Voice, micTest, sfx, rtcConstructor, rtcDiagnostics } from "./voice.js";
+import { Voice, micTest, sfx, rtcConstructor, rtcDiagnostics, qualityLevel } from "./voice.js";
 import { EMOJI_GROUPS, QUICK_REACTIONS } from "./emoji.js";
 
 // ============================================================ состояние
@@ -59,6 +59,8 @@ const S = {
   focusTile: "",
   prevVoiceMembers: null,
   avatars: {}, // ник в нижнем регистре -> url
+  quality: {}, // id участника -> {rtt, loss, jitter}
+  myStats: null, // подробная статистика своего соединения
 };
 setAvatarSource((nick) => S.avatars[nick.toLowerCase()] || "");
 lsSet("z228.clientId", S.clientId);
@@ -193,6 +195,11 @@ function onMessage(m) {
       return;
     case "presence":
       return onPresence(m.users);
+    case "quality":
+      if (m.quality) S.quality[m.userId] = m.quality;
+      else delete S.quality[m.userId];
+      updateQualityEls(m.userId);
+      return;
     case "channels":
       S.channels = m.channels;
       if (!channelById(S.textId) || channelById(S.textId).kind !== "text") selectText((textChannels()[0] || {}).id);
@@ -283,7 +290,8 @@ function onReady(m) {
   $("#login").hidden = true;
   $("#app").hidden = false;
   $("#serverName").textContent = S.server.name;
-  $("#railServer").title = S.server.name;
+  $("#serverSlogan").textContent = S.server.slogan || "";
+  $("#serverSlogan").hidden = !S.server.slogan;
 
   if (!channelById(S.textId) || channelById(S.textId).kind !== "text") S.textId = (textChannels()[0] || {}).id || 0;
   selectText(S.textId, S.view !== "text");
@@ -298,6 +306,10 @@ function onReady(m) {
 
 function onPresence(users) {
   S.users = users;
+  for (const u of users) {
+    if (u.quality) S.quality[u.id] = u.quality;
+    else if (!u.voiceChannelId) delete S.quality[u.id];
+  }
   const meU = S.me && userById(S.me.id);
   const sm = !!(meU && meU.serverMuted);
   if (sm !== voice.serverMuted) {
@@ -648,7 +660,8 @@ function renderChannels() {
               u.screen ? h("span.live-badge", null, "В ЭФИРЕ") : null,
               u.serverMuted ? h("span", { html: icon("micOff", 16), title: "Заглушён администратором", style: { color: "var(--danger)" } }) : null,
               u.deafened ? h("span", { html: icon("headphonesOff", 16), title: "Звук выключен" }) : u.muted && !u.serverMuted ? h("span", { html: icon("micOff", 16), title: "Микрофон выключен" }) : null,
-              S.localMutes[u.nickname.toLowerCase()] ? h("span", { html: icon("speaker", 16), title: "Заглушён вами", style: { opacity: 0.5 } }) : null
+              S.localMutes[u.nickname.toLowerCase()] ? h("span", { html: icon("speaker", 16), title: "Заглушён вами", style: { opacity: 0.5 } }) : null,
+              qualityEl(u.id)
             )
           )
         );
@@ -713,10 +726,14 @@ function renderVoicePanel() {
     failed: "Нет соединения",
     disconnected: "Отключено",
   }[S.voiceState];
-  st.className = "voice-status" + (S.voiceState === "connected" ? " ok" : S.voiceState === "failed" ? " bad" : "");
+  const lvl = S.voiceState === "connected" ? qualityLevel(S.myStats) : 0;
+  st.className =
+    "voice-status" +
+    (S.voiceState === "failed" ? " bad" : S.voiceState !== "connected" ? "" : lvl === 1 ? " bad" : lvl === 2 ? " warn" : " ok");
   $("#voiceStatusText").textContent = label || S.voiceState;
-  st.title = S.ping ? `Пинг до сервера: ${S.ping} мс` : "";
-  $("#voiceChannelLink").textContent = (ch ? ch.name : "") + " / " + S.server.name + (S.ping && S.voiceState === "connected" ? ` · ${S.ping} мс` : "");
+  st.title = "Нажмите, чтобы посмотреть качество связи";
+  const rtt = S.myStats && S.myStats.rtt != null ? S.myStats.rtt : S.ping;
+  $("#voiceChannelLink").textContent = (ch ? ch.name : "") + " / " + S.server.name + (rtt && S.voiceState === "connected" ? ` · ${rtt} мс` : "");
   $("#vpScreen").classList.toggle("active", !!voice.screenStream);
   $("#stScreen").classList.toggle("active", !!voice.screenStream);
 }
@@ -749,6 +766,65 @@ function renderMembers() {
   };
   section("Администраторы", admins);
   section("В сети", rest);
+}
+
+// ---------- индикатор качества связи ----------
+
+const BARS = "<i></i><i></i><i></i>";
+
+function qualityText(q) {
+  if (!q) return "Нет данных о связи";
+  const lvl = qualityLevel({ rtt: q.rtt, downLoss: q.loss });
+  const word = ["", "Плохая связь", "Связь так себе", "Хорошая связь"][lvl];
+  return `${word}: пинг ${q.rtt} мс, потери ${q.loss}%` + (q.jitter ? `, джиттер ${q.jitter} мс` : "");
+}
+
+function qualityEl(userId) {
+  const el = h("span.qbars", { dataset: { q: userId } });
+  fillQuality(el, S.quality[userId]);
+  return el;
+}
+
+function fillQuality(el, q) {
+  const lvl = q ? qualityLevel({ rtt: q.rtt, downLoss: q.loss }) : 0;
+  el.className = "qbars q" + lvl;
+  el.hidden = !q;
+  el.title = qualityText(q);
+  el.innerHTML = BARS;
+}
+
+function updateQualityEls(userId) {
+  for (const el of $$(`.qbars[data-q="${userId}"]`)) fillQuality(el, S.quality[userId]);
+}
+
+let qualityPop = null;
+function qualityPopoverOpen() {
+  return qualityPop && qualityPop.isConnected;
+}
+
+function showQualityDetails(anchor) {
+  const st = S.myStats;
+  const row = (k, v) => h("div.q-row", null, h("span.muted", null, k), h("b", null, v));
+  const fmt = (v, unit) => (v == null ? "—" : v + unit);
+  const lvl = qualityLevel(st);
+  const body = h(
+    "div.q-details",
+    null,
+    h("div.q-title", null, h("span.qbars.q" + lvl, { html: BARS }), ["Нет данных", "Плохая связь", "Связь так себе", "Хорошая связь"][lvl]),
+    row("Пинг до сервера", fmt(st && st.rtt, " мс")),
+    row("Потери (приём)", fmt(st && st.downLoss, "%")),
+    row("Потери (передача)", fmt(st && st.upLoss, "%")),
+    row("Джиттер", fmt(st && st.jitter, " мс")),
+    row("Входящий поток", fmt(st && st.kbpsIn, " кбит/с")),
+    row("Исходящий поток", fmt(st && st.kbpsOut, " кбит/с")),
+    row("Соединение", st && st.proto ? st.proto.toUpperCase() + (st.proto === "tcp" ? " (запасной путь, UDP закрыт)" : "") : "—"),
+    h("p.muted.small", { style: { margin: "8px 0 0" } }, "Обновляется каждые 3 секунды. Полоски у участников показывают, какая связь у них.")
+  );
+  if (qualityPopoverOpen() && !anchor) {
+    qualityPop.firstChild.replaceWith(body);
+    return;
+  }
+  qualityPop = popover(body, anchor || $("#voiceStatus"), { side: "top" });
 }
 
 // ============================================================ рендер: чат
@@ -1423,6 +1499,7 @@ function renderStage() {
         u.deafened ? h("span", { html: icon("headphonesOff", 16) }) : u.muted || u.serverMuted ? h("span", { html: icon("micOff", 16) }) : null,
         S.localMutes[u.nickname.toLowerCase()] && !isMe ? h("span", { title: "Заглушён вами" }, "🔇") : null,
         h("span", null, u.nickname + (isMe ? " (вы)" : "")),
+        qualityEl(u.id),
         !isMe && (S.volumes[u.nickname.toLowerCase()] ?? 100) !== 100 ? h("span", { style: { opacity: 0.7, fontSize: "12px" } }, (S.volumes[u.nickname.toLowerCase()] ?? 100) + "%") : null
       )
     );
@@ -2539,6 +2616,26 @@ function bindUi() {
   setInterval(() => {
     if (voice.active && S.ready) send("ping", { t: performance.now() });
   }, 5000);
+
+  // качество связи: снимаем статистику WebRTC и сообщаем серверу, чтобы видели другие
+  setInterval(async () => {
+    if (!voice.active || !S.ready || !S.me) return;
+    const st = await voice.collectStats().catch(() => null);
+    if (!st) return;
+    S.myStats = st;
+    const loss = Math.max(st.downLoss || 0, st.upLoss || 0);
+    if (st.rtt != null) {
+      S.quality[S.me.id] = { rtt: st.rtt, loss, jitter: st.jitter || 0 };
+      send("voice-quality", { rtt: st.rtt, loss, jitter: st.jitter || 0 });
+    }
+    renderVoicePanel();
+    updateQualityEls(S.me.id);
+    if (qualityPopoverOpen()) showQualityDetails();
+  }, 3000);
+  $("#voiceStatus").onclick = (e) => {
+    e.stopPropagation();
+    showQualityDetails(e.currentTarget);
+  };
 
   // браузеры не дают проигрывать звук до первого клика — разблокируем
   document.addEventListener("pointerdown", () => voice.audioCtx(), { once: true });

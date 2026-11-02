@@ -16,6 +16,7 @@ type Config struct {
 
 	// Сервер
 	ServerName     string
+	ServerSlogan   string // подпись под названием сервера
 	ServerPassword string // пароль для входа на сервер (пусто — вход открыт)
 	AdminPassword  string // пусто — сгенерируется и сохранится в БД
 	MaxUploadMB    int
@@ -42,7 +43,8 @@ func Load() Config {
 		DataDir:    envString("DATA_DIR", "data"),
 		WebDir:     envString("WEB_DIR", ""),
 
-		ServerName:     envString("SERVER_NAME", "z228"),
+		ServerName:     envString("SERVER_NAME", "ZALUPA228"),
+		ServerSlogan:   envString("SERVER_SLOGAN", "кто не с нами - сосите хуй"),
 		ServerPassword: envString("SERVER_PASSWORD", ""),
 		AdminPassword:  envString("ADMIN_PASSWORD", envString("ADMIN_PANEL_PASSWORD", "")),
 		MaxUploadMB:    envInt("MAX_UPLOAD_MB", 25),

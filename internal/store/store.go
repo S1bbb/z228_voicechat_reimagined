@@ -134,17 +134,18 @@ func (s *Store) seed(ctx context.Context) error {
 	if n > 0 {
 		return nil
 	}
-	if _, err := s.CreateChannel(ctx, "text", "общий"); err != nil {
-		return err
+	for _, ch := range []struct{ kind, name string }{
+		{"text", "пишущая залупа"},
+		{"text", "фото залупы"},
+		{"voice", "говорящая залупа"},
+		{"voice", "шепчущая залупа"},
+		{"voice", "молчащая залупа"},
+	} {
+		if _, err := s.CreateChannel(ctx, ch.kind, ch.name); err != nil {
+			return err
+		}
 	}
-	if _, err := s.CreateChannel(ctx, "text", "мемы"); err != nil {
-		return err
-	}
-	if _, err := s.CreateChannel(ctx, "voice", "Общий"); err != nil {
-		return err
-	}
-	_, err := s.CreateChannel(ctx, "voice", "Игры")
-	return err
+	return nil
 }
 
 // ---------- settings ----------
