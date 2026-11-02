@@ -80,6 +80,14 @@ CREATE TABLE IF NOT EXISTS messages(
 	edited_at   INTEGER
 );
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel_id, id);
+CREATE TABLE IF NOT EXISTS invites(
+	code         TEXT PRIMARY KEY,
+	label        TEXT NOT NULL DEFAULT '',
+	created_by   TEXT NOT NULL DEFAULT '',
+	created_at   INTEGER NOT NULL,
+	uses         INTEGER NOT NULL DEFAULT 0,
+	last_used_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS avatars(
 	nick       TEXT PRIMARY KEY, -- ник в нижнем регистре
 	url        TEXT NOT NULL,
@@ -154,6 +162,75 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	return err
+}
+
+// ---------- invites (ключи доступа) ----------
+
+type Invite struct {
+	Code       string `json:"code"`
+	Label      string `json:"label"`
+	CreatedBy  string `json:"createdBy"`
+	CreatedAt  int64  `json:"createdAt"`
+	Uses       int    `json:"uses"`
+	LastUsedAt *int64 `json:"lastUsedAt"`
+}
+
+func (s *Store) Invites(ctx context.Context) ([]Invite, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT code, label, created_by, created_at, uses, last_used_at FROM invites ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Invite{}
+	for rows.Next() {
+		var in Invite
+		var last sql.NullInt64
+		if err := rows.Scan(&in.Code, &in.Label, &in.CreatedBy, &in.CreatedAt, &in.Uses, &last); err != nil {
+			return nil, err
+		}
+		if last.Valid {
+			v := last.Int64
+			in.LastUsedAt = &v
+		}
+		out = append(out, in)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) InviteCount(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM invites`).Scan(&n)
+	return n, err
+}
+
+func (s *Store) CreateInvite(ctx context.Context, code, label, by string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO invites(code,label,created_by,created_at) VALUES(?,?,?,?)`, code, label, by, nowMs())
+	return err
+}
+
+func (s *Store) DeleteInvite(ctx context.Context, code string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM invites WHERE code=?`, code)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UseInvite отмечает вход по ключу; false — такого ключа нет.
+func (s *Store) UseInvite(ctx context.Context, code string) (bool, error) {
+	if code == "" {
+		return false, nil
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE invites SET uses=uses+1, last_used_at=? WHERE code=?`, nowMs(), code)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // ---------- avatars ----------

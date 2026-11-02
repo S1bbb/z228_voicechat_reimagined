@@ -26,8 +26,8 @@
           <input id="loginNick" maxlength="32" required autofocus />
         </label>
         <label class="field" id="loginPasswordField" hidden>
-          <span>Пароль сервера</span>
-          <input id="loginPassword" type="password" />
+          <span>Ключ доступа</span>
+          <input id="loginPassword" type="password" autocomplete="off" placeholder="из ссылки-приглашения" />
         </label>
         <p id="loginError" class="form-error" hidden></p>
         <button class="btn btn-primary btn-block" id="loginBtn" type="submit">Войти</button>

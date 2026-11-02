@@ -170,7 +170,11 @@ function onMessage(m) {
       return onReady(m);
     case "hello-rejected":
       disconnect();
-      showLogin(m.message, m.reason === "password");
+      if (m.reason === "key" || m.reason === "password") {
+        S.password = "";
+        lsSet("z228.password", "");
+      }
+      showLogin(m.message, m.reason === "key" || m.reason === "password");
       return;
     case "replaced":
       disconnect();
@@ -178,7 +182,11 @@ function onMessage(m) {
       return;
     case "kicked":
       disconnect();
-      showLogin(m.message || "Вас отключили.");
+      if (m.reason === "key") {
+        S.password = "";
+        lsSet("z228.password", "");
+      }
+      showLogin(m.message || "Вас отключили.", m.reason === "key");
       return;
     case "error":
       toast(m.message, "error");
@@ -224,6 +232,7 @@ function onMessage(m) {
     case "admin":
       S.admin = !!m.ok;
       if (m.ok && m.token) {
+        S.invitesRequested = false;
         S.adminToken = m.token;
         lsSet("z228.adminToken", m.token);
         toast("Вы вошли как администратор.", "ok");
@@ -242,6 +251,10 @@ function onMessage(m) {
       renderAll();
       if (S.view === "text") renderMessages({});
       if (settingsSection === "profile") renderSettings();
+      return;
+    case "invites":
+      S.invites = m;
+      if (settingsSection === "admin") renderSettings();
       return;
     case "pong":
       S.ping = Math.round(performance.now() - m.t);
@@ -1794,6 +1807,7 @@ function openSettings(section = "voice") {
 }
 
 function closeSettings() {
+  S.invitesRequested = false;
   if (stopMicTest) stopMicTest();
   stopMicTest = null;
   if (settingsEl) settingsEl.remove();
@@ -2132,6 +2146,7 @@ function settingsAdmin(c) {
     setTimeout(() => pw.focus());
     return;
   }
+  settingsAccess(c);
   c.append(h("h3", null, "Каналы"));
   const list = h("div.admin-list");
   for (const ch of S.channels) {
@@ -2174,6 +2189,108 @@ function settingsAdmin(c) {
     );
   }
   c.append(ul, h("div", { style: { marginTop: "24px" } }, h("button.btn", { onclick: () => send("admin-logout") }, "Выйти из режима администратора")));
+}
+
+// ---------- ключи доступа ----------
+
+function inviteLink(code) {
+  return `${location.origin}/#k=${code}`;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = h("textarea", { style: { position: "fixed", opacity: 0 } });
+    ta.value = text;
+    document.body.append(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  toast("Ссылка скопирована — отправьте её другу.", "ok");
+}
+
+function settingsAccess(c) {
+  if (!S.invitesRequested) {
+    S.invitesRequested = true;
+    send("invites");
+  }
+  c.append(h("h3", null, "Доступ к серверу"));
+  const info = S.invites;
+  if (!info) {
+    c.append(h("p.muted", null, "Загрузка…"));
+    return;
+  }
+  c.append(
+    h(
+      "div.info-box",
+      { style: { borderLeftColor: info.required ? "var(--success)" : "var(--warning)", marginBottom: "12px" } },
+      info.required
+        ? "🔒 Вход только по ключу. Без ссылки-приглашения на сервер не зайти — ни людям, ни ботам."
+        : "🔓 Сервер открыт: зайти может любой, кто знает адрес. Создайте ключ — и вход станет только по приглашению.",
+      info.master ? h("div.small", { style: { marginTop: "6px" } }, "Также действует общий ключ из настроек сервера (SERVER_PASSWORD).") : null
+    )
+  );
+  const list = h("div.admin-list");
+  for (const inv of info.invites) {
+    const link = inviteLink(inv.code);
+    list.append(
+      h(
+        "div.admin-row",
+        { style: { flexWrap: "wrap" } },
+        h("span", { html: icon("crown", 16), style: { color: "var(--brand)" } }),
+        h(
+          "span.name",
+          null,
+          h("b", null, inv.label || "Без названия"),
+          h("span.muted.small", null, `  · входов: ${inv.uses}` + (inv.createdBy ? ` · создал ${inv.createdBy}` : ""))
+        ),
+        h("input.input", { value: link, readonly: true, style: { flex: "1 1 260px", height: "30px", fontSize: "13px" }, onclick: (e) => e.target.select() }),
+        h("button.btn.btn-sm.btn-primary", { onclick: () => copyText(link) }, "Копировать"),
+        h("button.icon-btn.danger", {
+          html: icon("trash", 18),
+          title: "Отозвать ключ",
+          onclick: () =>
+            modal({
+              title: "Отозвать ключ",
+              body: h("p", null, `Ключ «${inv.label || "Без названия"}» перестанет работать, а все, кто сейчас зашёл по нему, будут отключены.`),
+              okText: "Отозвать",
+              danger: true,
+              onOk: () => send("invite-delete", { text: inv.code }),
+            }),
+        })
+      )
+    );
+  }
+  if (info.invites.length) c.append(list);
+  const label = h("input.input", { placeholder: "Для кого ключ (необязательно): например, «брат»", maxlength: 40 });
+  const create = () => {
+    const first = !info.required;
+    const go = () => {
+      send("invite-create", { name: label.value });
+      label.value = "";
+    };
+    if (!first) return go();
+    modal({
+      title: "Закрыть сервер ключом?",
+      body: [
+        h("p", null, "После создания первого ключа зайти можно будет только по ссылке-приглашению."),
+        h("p.muted.small", null, "Тем, кто сейчас в чате, ничего не будет, но при следующем входе им понадобится ссылка — разошлите её. Вы как админ входите без ключа."),
+      ],
+      okText: "Создать ключ",
+      onOk: go,
+    });
+  };
+  label.onkeydown = (e) => e.key === "Enter" && create();
+  c.append(
+    h("div", { style: { display: "flex", gap: "8px", marginTop: "12px", maxWidth: "560px" } }, label, h("button.btn.btn-primary", { onclick: create }, "Создать ключ")),
+    h(
+      "p.muted.small",
+      { style: { marginTop: "8px" } },
+      "Совет: делайте отдельный ключ на каждого — тогда можно отозвать доступ одному человеку, не трогая остальных."
+    )
+  );
 }
 
 function settingsDonate(c) {
@@ -2434,6 +2551,28 @@ function bindUi() {
 }
 
 // ============================================================ старт
+
+// ключ из ссылки-приглашения вида https://сервер/#k=КЛЮЧ — запоминаем и убираем из адресной строки
+function readInviteFromUrl() {
+  const m = location.hash.match(/[#&]k=([A-Za-z0-9_-]{4,128})/);
+  if (!m) return false;
+  S.password = m[1];
+  lsSet("z228.password", S.password);
+  history.replaceState(null, "", location.pathname + location.search);
+  return true;
+}
+readInviteFromUrl();
+// ссылку вставили в уже открытую вкладку — страница не перезагружается, меняется только #
+window.addEventListener("hashchange", () => {
+  if (!readInviteFromUrl() || S.ready) return;
+  $("#loginPasswordField").hidden = false;
+  $("#loginPassword").value = S.password;
+  $("#loginError").hidden = true;
+  if (S.nick) {
+    disconnect();
+    connect();
+  }
+});
 
 bindUi();
 applyTheme();

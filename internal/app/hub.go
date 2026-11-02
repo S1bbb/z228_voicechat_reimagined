@@ -46,10 +46,11 @@ type Hub struct {
 	sessions map[string]*session // по id сессии
 	byNick   map[string]*session // по нику в нижнем регистре
 	mutedBy  map[string]bool     // ники, заглушённые админом (до перезапуска сервера)
+	guard    *guard              // защита от перебора ключа и пароля админа
 }
 
 func NewHub(opts Options) *Hub {
-	return &Hub{opts: opts, sessions: map[string]*session{}, byNick: map[string]*session{}, mutedBy: map[string]bool{}}
+	return &Hub{opts: opts, sessions: map[string]*session{}, byNick: map[string]*session{}, mutedBy: map[string]bool{}, guard: newGuard()}
 }
 
 type session struct {
@@ -60,6 +61,8 @@ type session struct {
 	conn     *websocket.Conn
 	out      chan []byte
 	done     chan struct{}
+	closing  chan struct{} // закрыть соединение, дописав очередь (отказ во входе, кик)
+	closeReq sync.Once
 	stopOnce sync.Once
 
 	// под hub.mu
@@ -76,6 +79,9 @@ type session struct {
 	// антиспам (только из read-горутины)
 	bucket     float64
 	bucketTime time.Time
+
+	ip         string
+	inviteCode string // по какому ключу-приглашению вошёл ("" — общий ключ или сервер открыт)
 }
 
 type inMsg struct {
@@ -136,7 +142,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	s := &session{hub: h, conn: conn, out: make(chan []byte, 512), done: make(chan struct{})}
+	s := &session{hub: h, conn: conn, out: make(chan []byte, 512), done: make(chan struct{}), closing: make(chan struct{}), ip: clientIP(r)}
 	go s.writeLoop()
 	s.readLoop()
 }
@@ -159,8 +165,46 @@ func (s *session) writeLoop() {
 				s.stop()
 				return
 			}
+		case <-s.closing:
+			// дописываем всё, что успели поставить в очередь (например, причину отказа), и закрываемся
+			for {
+				select {
+				case b := <-s.out:
+					_ = s.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+					if err := s.conn.WriteMessage(websocket.TextMessage, b); err != nil {
+						s.stop()
+						return
+					}
+					continue
+				default:
+				}
+				break
+			}
+			_ = s.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(2*time.Second))
+			s.stop()
+			return
 		}
 	}
+}
+
+// closeAfterFlush закрывает соединение после отправки уже поставленных в очередь сообщений и ждёт этого.
+func (s *session) closeAfterFlush() {
+	s.requestClose()
+	<-s.done
+}
+
+// requestClose — то же без ожидания; если клиент не читает, через 3 с рвём соединение.
+func (s *session) requestClose() {
+	s.closeReq.Do(func() {
+		close(s.closing)
+		go func() {
+			select {
+			case <-s.done:
+			case <-time.After(3 * time.Second):
+				s.stop()
+			}
+		}()
+	})
 }
 
 func (s *session) stop() {
@@ -226,6 +270,7 @@ func (s *session) readLoop() {
 				continue
 			}
 			if !s.hub.register(s, &m) {
+				s.closeAfterFlush()
 				return
 			}
 			registered = true
@@ -248,10 +293,29 @@ func normalizeNick(n string) (string, bool) {
 }
 
 func (h *Hub) register(s *session, m *inMsg) bool {
-	if h.opts.ServerPassword != "" && subtle.ConstantTimeCompare([]byte(m.Password), []byte(h.opts.ServerPassword)) != 1 {
-		log.Printf("отказ входа (%s): неверный пароль сервера", s.conn.RemoteAddr())
-		s.send("hello-rejected", map[string]any{"reason": "password", "message": "Неверный пароль сервера."})
-		return false
+	ctx := context.Background()
+	inviteCode := ""
+	adminByToken := h.opts.AdminPassword != "" && hmac.Equal([]byte(m.AdminToken), []byte(h.adminToken(strings.TrimSpace(m.ClientID))))
+	// админ (валидный токен этого браузера) входит без ключа — чтобы не запереть себя снаружи
+	if !adminByToken && h.accessRequired(ctx) {
+		if h.guard.blocked(s.ip) {
+			s.send("hello-rejected", map[string]any{"reason": "key", "message": "Слишком много неверных попыток. Попробуйте через 15 минут."})
+			return false
+		}
+		code, ok := h.checkKey(ctx, m.Password)
+		if !ok {
+			msg := "Неверный ключ доступа."
+			if strings.TrimSpace(m.Password) == "" {
+				msg = "Сервер закрыт: нужен ключ доступа. Попросите у админа ссылку-приглашение."
+			} else if h.guard.fail(s.ip) {
+				log.Printf("отказ входа (%s): перебор ключа — IP заблокирован на 15 минут", s.ip)
+			} else {
+				log.Printf("отказ входа (%s): неверный ключ доступа", s.ip)
+			}
+			s.send("hello-rejected", map[string]any{"reason": "key", "message": msg})
+			return false
+		}
+		inviteCode = code
 	}
 	nick, ok := normalizeNick(m.Nickname)
 	if !ok {
@@ -275,6 +339,7 @@ func (h *Hub) register(s *session, m *inMsg) bool {
 		return false
 	}
 	s.id = randomHex(12)
+	s.inviteCode = inviteCode
 	s.clientID = clientID
 	s.nickname = nick
 	s.admin = h.opts.AdminPassword != "" && hmac.Equal([]byte(m.AdminToken), []byte(h.adminToken(clientID)))
@@ -327,7 +392,7 @@ func (h *Hub) dropSession(s *session) {
 	if peer != nil {
 		peer.Close()
 	}
-	s.stop()
+	s.requestClose()
 }
 
 func (h *Hub) removeLocked(s *session) bool {
@@ -592,7 +657,14 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		}
 
 	case "admin-login":
+		if h.guard.blocked(s.ip) {
+			s.send("admin", map[string]any{"ok": false, "message": "Слишком много неверных попыток. Попробуйте через 15 минут."})
+			return
+		}
 		if h.opts.AdminPassword == "" || subtle.ConstantTimeCompare([]byte(m.Password), []byte(h.opts.AdminPassword)) != 1 {
+			if h.guard.fail(s.ip) {
+				log.Printf("%s (%s): перебор пароля админа — IP заблокирован на 15 минут", s.nickname, s.ip)
+			}
 			time.Sleep(500 * time.Millisecond)
 			s.send("admin", map[string]any{"ok": false, "message": "Неверный пароль."})
 			return
@@ -610,12 +682,17 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		s.send("admin", map[string]any{"ok": false})
 		h.broadcastPresence()
 
-	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute":
+	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute",
+		"invites", "invite-create", "invite-delete":
 		h.mu.Lock()
 		admin := s.admin
 		h.mu.Unlock()
 		if !admin {
 			s.sendError("Нужны права администратора.")
+			return
+		}
+		if strings.HasPrefix(m.Type, "invite") {
+			h.handleInvites(s, m)
 			return
 		}
 		h.handleAdmin(s, m)

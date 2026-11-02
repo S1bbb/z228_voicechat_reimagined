@@ -1,0 +1,184 @@
+package app
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"log"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Ключи доступа. Сервер закрыт, если задан общий ключ (SERVER_PASSWORD / -password)
+// или админ создал хотя бы один ключ-приглашение. Пока ключей нет — вход открыт.
+
+const (
+	failWindow = 10 * time.Minute
+	failLimit  = 8
+	blockFor   = 15 * time.Minute
+)
+
+// guard считает неудачные попытки (ключ, пароль админа) по IP и временно блокирует перебор.
+type guard struct {
+	mu sync.Mutex
+	m  map[string]*attempts
+}
+
+type attempts struct {
+	n     int
+	first time.Time
+	until time.Time
+}
+
+func newGuard() *guard { return &guard{m: map[string]*attempts{}} }
+
+func (g *guard) blocked(ip string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	a := g.m[ip]
+	return a != nil && time.Now().Before(a.until)
+}
+
+// fail возвращает true, если после этой попытки IP заблокирован.
+func (g *guard) fail(ip string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	a := g.m[ip]
+	if a == nil || now.Sub(a.first) > failWindow {
+		a = &attempts{first: now}
+		g.m[ip] = a
+	}
+	a.n++
+	if a.n >= failLimit {
+		a.until = now.Add(blockFor)
+		a.n = 0
+		a.first = now
+		return true
+	}
+	// заодно чистим старые записи, чтобы карта не росла бесконечно
+	if len(g.m) > 10000 {
+		for k, v := range g.m {
+			if now.Sub(v.first) > failWindow && now.After(v.until) {
+				delete(g.m, k)
+			}
+		}
+	}
+	return false
+}
+
+// clientIP — адрес клиента; X-Forwarded-For учитываем только от reverse proxy на этой же машине.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			return strings.TrimSpace(strings.Split(xff, ",")[0])
+		}
+	}
+	return host
+}
+
+// accessRequired — нужен ли ключ для входа.
+func (h *Hub) accessRequired(ctx context.Context) bool {
+	if h.opts.ServerPassword != "" {
+		return true
+	}
+	n, err := h.opts.Store.InviteCount(ctx)
+	if err != nil {
+		log.Printf("invites: %v", err)
+		return true // при ошибке БД лучше закрыться, чем открыться
+	}
+	return n > 0
+}
+
+// checkKey проверяет ключ; возвращает код приглашения ("" для общего ключа) и успех.
+func (h *Hub) checkKey(ctx context.Context, key string) (string, bool) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", false
+	}
+	if h.opts.ServerPassword != "" && subtle.ConstantTimeCompare([]byte(key), []byte(h.opts.ServerPassword)) == 1 {
+		return "", true
+	}
+	ok, err := h.opts.Store.UseInvite(ctx, strings.ToLower(key))
+	if err != nil {
+		log.Printf("invite: %v", err)
+		return "", false
+	}
+	if ok {
+		return strings.ToLower(key), true
+	}
+	return "", false
+}
+
+// inviteCode — 16 символов без похожих друг на друга букв/цифр (~79 бит).
+func inviteCode() string {
+	const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return string(b)
+}
+
+func (h *Hub) sendInvites(s *session) {
+	ctx := context.Background()
+	list, err := h.opts.Store.Invites(ctx)
+	if err != nil {
+		s.sendError("Не удалось загрузить ключи.")
+		return
+	}
+	s.send("invites", map[string]any{
+		"invites":  list,
+		"required": h.accessRequired(ctx),
+		"master":   h.opts.ServerPassword != "",
+	})
+}
+
+func (h *Hub) handleInvites(s *session, m *inMsg) {
+	ctx := context.Background()
+	switch m.Type {
+	case "invite-create":
+		label := strings.Join(strings.Fields(m.Name), " ")
+		if r := []rune(label); len(r) > 40 {
+			label = string(r[:40])
+		}
+		if err := h.opts.Store.CreateInvite(ctx, inviteCode(), label, s.nickname); err != nil {
+			s.sendError("Не удалось создать ключ.")
+			return
+		}
+		log.Printf("%s создал ключ доступа %q", s.nickname, label)
+	case "invite-delete":
+		code := strings.ToLower(strings.TrimSpace(m.Text))
+		if err := h.opts.Store.DeleteInvite(ctx, code); err != nil {
+			s.sendError("Ключ не найден.")
+			return
+		}
+		log.Printf("%s удалил ключ доступа", s.nickname)
+		// всех, кто вошёл по отозванному ключу, отключаем
+		h.mu.Lock()
+		var victims []*session
+		for _, x := range h.sessions {
+			if x.inviteCode == code && x != s {
+				victims = append(victims, x)
+			}
+		}
+		h.mu.Unlock()
+		for _, v := range victims {
+			v.send("kicked", map[string]any{"message": "Ваш ключ доступа отозван администратором.", "reason": "key"})
+			go func(v *session) {
+				time.Sleep(200 * time.Millisecond)
+				h.dropSession(v)
+				h.broadcastPresence()
+			}(v)
+		}
+	}
+	h.sendInvites(s)
+}

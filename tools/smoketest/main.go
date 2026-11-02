@@ -35,6 +35,8 @@ type client struct {
 	watch   string // чей трек считаем (в канале могут сидеть живые люди)
 }
 
+var accessKey string
+
 func dial(url, nick string) *client {
 	// сертификат по умолчанию самоподписанный — для теста проверку не делаем
 	d := websocket.Dialer{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, HandshakeTimeout: 10 * time.Second}
@@ -72,7 +74,7 @@ func dial(url, nick string) *client {
 			}
 		}
 	}()
-	c.send(map[string]any{"type": "hello", "nickname": nick, "clientId": "smoke-" + nick + "-0000"})
+	c.send(map[string]any{"type": "hello", "nickname": nick, "clientId": "smoke-" + nick + "-0000", "password": accessKey})
 	m := c.wait("ready")
 	c.id = m["sessionId"].(string)
 	return c
@@ -172,6 +174,7 @@ func (c *client) streamSilence(stop chan struct{}) {
 func main() {
 	url := flag.String("url", "ws://127.0.0.1:3000/ws", "адрес WebSocket")
 	adminPw := flag.String("admin", "", "пароль админа (проверить серверный мьют)")
+	flag.StringVar(&accessKey, "key", "", "ключ доступа, если сервер закрыт")
 	flag.Parse()
 
 	a := dial(*url, "smokeA")
