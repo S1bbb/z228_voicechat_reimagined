@@ -2230,6 +2230,11 @@ $("#loginForm").addEventListener("submit", (e) => {
 // ============================================================ уведомления-тосты, баннер
 
 function toast(text, kind = "") {
+  // одинаковое сообщение не дублируем — просто продлеваем уже показанное
+  const same = $$(".toast").find((t) => t.textContent === text);
+  if (same) {
+    same.remove();
+  }
   const el = h("div.toast" + (kind ? "." + kind : ""), null, text);
   $("#toasts").append(el);
   setTimeout(() => el.remove(), kind === "error" ? 6000 : 3500);
