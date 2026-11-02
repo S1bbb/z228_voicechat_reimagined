@@ -1414,11 +1414,47 @@ function renderStage() {
   } else {
     grid.append(...tiles);
   }
+  layoutStage();
   for (const v of grid.querySelectorAll("video")) v.play().catch(() => {});
   for (const [key, v] of videoEls) if (!v.isConnected) {
     v.srcObject = null;
     videoEls.delete(key);
   }
+}
+
+const TILE_GAP = 8;
+const TILE_RATIO = 16 / 9;
+
+/**
+ * Как в Discord: плитки 16:9, число колонок подбирается так, чтобы плитки были максимально
+ * крупными и все влезали в окно. Неполный последний ряд центрируется (flex-wrap).
+ */
+function layoutStage() {
+  const grid = $("#stageGrid");
+  if (!grid || grid.offsetParent === null) return;
+  const cs = getComputedStyle(grid);
+  const W = grid.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  let H = grid.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  let n = grid.querySelectorAll(":scope > .tile").length;
+  if (grid.classList.contains("focus")) {
+    const strip = grid.querySelector(".stage-strip");
+    if (strip && strip.children.length) H -= strip.offsetHeight + TILE_GAP;
+    n = 1;
+  }
+  if (!n || W <= 0 || H <= 0) return;
+  let best = 0;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    // столбик из плиток выглядит плохо — рядов не больше, чем колонок (3 → 2+1, 4 → 2×2)
+    if (rows > cols) continue;
+    const w = Math.min((W - TILE_GAP * (cols - 1)) / cols, ((H - TILE_GAP * (rows - 1)) / rows) * TILE_RATIO);
+    if (w > best) best = w;
+  }
+  const w = Math.max(120, Math.floor(best) - 1);
+  grid.style.setProperty("--tile-w", w + "px");
+  grid.style.setProperty("--tile-h", Math.floor(w / TILE_RATIO) + "px");
+  // аватар в маленьких плитках тоже уменьшаем
+  grid.style.setProperty("--tile-av", Math.min(1.4, Math.max(0.5, w / 360)).toFixed(2));
 }
 
 function toggleFocus(key) {
@@ -2254,6 +2290,7 @@ function bindResizer(handle, name, panel, fromRight) {
 
 function bindUi() {
   applyPanelWidths();
+  new ResizeObserver(() => layoutStage()).observe($("#stageGrid"));
   bindResizer($("#sidebarResizer"), "sidebar", $("#sidebar"), false);
   bindResizer($("#membersResizer"), "members", $("#members"), true);
 

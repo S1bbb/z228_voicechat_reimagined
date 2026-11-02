@@ -1379,31 +1379,48 @@ a:hover {
   flex: 1;
   min-height: 0;
   padding: 16px;
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  grid-auto-rows: minmax(140px, 1fr);
+  justify-content: center;
   align-content: center;
-  overflow-y: auto;
+  overflow: hidden;
+}
+/* размеры плиток считает JS (layoutStage): всегда 16:9, число колонок подбирается под окно */
+.stage-grid > .tile {
+  width: var(--tile-w, 320px);
+  height: var(--tile-h, 180px);
+  flex: none;
 }
 .stage-grid.focus {
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr auto;
-  grid-auto-rows: auto;
-}
-.stage-grid.focus .tile:not(.focused) {
-  display: none;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: center;
 }
 .stage-strip {
   display: flex;
   gap: 8px;
   overflow-x: auto;
   justify-content: center;
+  max-width: 100%;
+  flex: none;
 }
 .stage-strip .tile {
-  width: 180px;
-  height: 100px;
+  width: 160px;
+  height: 90px;
   flex-shrink: 0;
+}
+.tile > .avatar {
+  transform: scale(var(--tile-av, 1));
+}
+.stage-strip .tile > .avatar {
+  transform: scale(0.5);
+}
+.stage-strip .tile-label {
+  font-size: 12px;
+  padding: 2px 6px;
+  left: 4px;
+  bottom: 4px;
 }
 .tile {
   position: relative;
@@ -2068,9 +2085,6 @@ a:hover {
     right: 12px;
   }
   .grid2 {
-    grid-template-columns: 1fr;
-  }
-  .stage-grid {
     grid-template-columns: 1fr;
   }
   .round-btn {
