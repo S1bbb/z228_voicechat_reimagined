@@ -4,6 +4,28 @@
 const SPEAK_THRESHOLD = 0.018;
 const SPEAK_HOLD_MS = 280;
 
+/** RTCPeerConnection, в том числе под старыми префиксами. */
+export function rtcConstructor() {
+  return window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection || null;
+}
+
+/** Что умеет браузер — отправляем на сервер, когда голос не запускается. */
+export function rtcDiagnostics() {
+  const md = navigator.mediaDevices;
+  return {
+    ua: navigator.userAgent,
+    secure: window.isSecureContext,
+    rtc: typeof window.RTCPeerConnection,
+    webkitRtc: typeof window.webkitRTCPeerConnection,
+    mediaDevices: !!md,
+    getUserMedia: !!(md && md.getUserMedia),
+    protocol: location.protocol,
+    host: location.host,
+    // антивирусы и расширения часто подменяют/удаляют WebRTC, внедряя свои скрипты
+    scripts: Array.from(document.scripts).map((s) => s.src).filter((s) => s && !s.startsWith(location.origin)).slice(0, 5),
+  };
+}
+
 export class Voice {
   /**
    * @param {(type:string, payload:object)=>void} send — отправка в WebSocket
@@ -83,7 +105,8 @@ export class Voice {
     this.hooks.onState("connecting");
     this.audioCtx();
 
-    const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
+    const PC = rtcConstructor();
+    const pc = new PC({ iceServers: [], bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
     this.pc = pc;
     pc.onicecandidate = (e) => {
       if (e.candidate && this.pc === pc) this.send("rtc-candidate", { candidate: e.candidate.toJSON(), joinId });

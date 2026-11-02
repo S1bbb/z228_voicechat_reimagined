@@ -524,6 +524,16 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		}
 		h.broadcast("avatar", map[string]any{"nickname": strings.ToLower(s.nickname), "url": url}, nil)
 
+	case "client-diag":
+		// браузер сообщает, почему у него не запускается голос (UA, наличие WebRTC и т.п.)
+		if s.allow(3) {
+			d := m.Text
+			if len(d) > 2000 {
+				d = d[:2000]
+			}
+			log.Printf("диагностика %s: %s", s.nickname, d)
+		}
+
 	case "typing":
 		h.broadcast("typing", map[string]any{"channelId": m.ChannelID, "userId": s.id, "nickname": s.nickname}, s)
 

@@ -1,6 +1,6 @@
 import { $, $$, h, avatar, avatarColor, setAvatarSource, lsGet, lsSet, randomId, renderMarkdown, mentionsMe, isEmojiOnly, fmtTime, fmtFull, fmtStamp, fmtDay, sameDay, fmtSize } from "./util.js";
 import { icon } from "./icons.js";
-import { Voice, micTest, sfx } from "./voice.js";
+import { Voice, micTest, sfx, rtcConstructor, rtcDiagnostics } from "./voice.js";
 import { EMOJI_GROUPS, QUICK_REACTIONS } from "./emoji.js";
 
 // ============================================================ состояние
@@ -493,7 +493,8 @@ async function joinVoice(id, silent = false) {
     return;
   }
   openStage(id);
-  if (typeof RTCPeerConnection === "undefined") {
+  if (!rtcConstructor()) {
+    send("client-diag", { text: JSON.stringify(rtcDiagnostics()) });
     toast("В этом браузере отключён WebRTC (часто это делают расширения-блокировщики или VPN-расширения). Отключите их для этого сайта или откройте чат в другом браузере.", "error");
     return;
   }
@@ -501,6 +502,7 @@ async function joinVoice(id, silent = false) {
     await voice.join(id, S.me.id);
   } catch (e) {
     console.error("voice join", e);
+    send("client-diag", { text: JSON.stringify({ error: String(e && (e.stack || e.message || e)), ...rtcDiagnostics() }) });
     toast("Не удалось подключиться к голосу: " + (e.message || e.name), "error");
     voice.leave(false);
     renderAll();
