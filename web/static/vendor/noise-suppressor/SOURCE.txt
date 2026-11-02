@@ -1,0 +1,2 @@
+@sapphi-red/web-noise-suppressor 0.4.1 (MIT) — https://github.com/sapphi-red/web-noise-suppressor
+Взяты dist/index.js, dist/rnnoise/workletProcessor.js и rnnoise*.wasm, без source map.

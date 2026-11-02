@@ -1,3 +1,5 @@
+import { suppressNoise, noiseSuppressionSupported } from "./noise.js";
+
 // Голос: одно RTCPeerConnection с сервером (SFU), микрофон, демонстрация экрана,
 // воспроизведение собеседников, громкость по людям и индикация речи.
 
@@ -83,7 +85,8 @@ export class Voice {
     const s = this.settings;
     const audio = {
       echoCancellation: s.echoCancellation !== false,
-      noiseSuppression: s.noiseSuppression !== false,
+      // с RNNoise встроенный шумодав браузера выключаем — двойная обработка портит голос
+      noiseSuppression: s.rnnoise ? false : s.noiseSuppression !== false,
       autoGainControl: s.autoGainControl !== false,
       channelCount: 1,
     };
@@ -167,15 +170,52 @@ export class Voice {
       mic.getTracks().forEach((t) => t.stop());
       return;
     }
-    if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
-    this.micStream = mic;
-    this.micTrack = mic.getAudioTracks()[0] || null;
+    const m = await this.processMic(mic);
+    if (this.joinId !== joinId) {
+      this.releaseMicObj(m);
+      return;
+    }
+    this.releaseMic();
+    await this.setMic(m);
+    if (this.hooks.onMic) this.hooks.onMic(true);
+  }
+
+  /** Сырой поток микрофона -> то, что отправляем (через RNNoise, если включён). */
+  async processMic(raw) {
+    const plain = { raw, stream: raw, track: raw.getAudioTracks()[0] || null, close: null };
+    if (!this.settings.rnnoise || !noiseSuppressionSupported()) return plain;
+    try {
+      const ns = await suppressNoise(raw);
+      return { raw, stream: ns.stream, track: ns.track, close: ns.close };
+    } catch (e) {
+      console.warn("rnnoise", e);
+      this.hooks.onError("Шумодав RNNoise не запустился в этом браузере — голос идёт без него.");
+      return plain;
+    }
+  }
+
+  async setMic(m) {
+    this.mic = m;
+    this.micStream = m.stream;
+    this.micTrack = m.track;
     this.localAnalyser = null;
     this.applyMicGate();
     // если offer уже обработан — подставляем трек в готовый transceiver, иначе это сделает onOffer
     const t = this.sendTransceiver("0");
     if (t && t.sender.track !== this.micTrack) await t.sender.replaceTrack(this.micTrack).catch(() => {});
-    if (this.hooks.onMic) this.hooks.onMic(true);
+  }
+
+  releaseMicObj(m) {
+    if (!m) return;
+    if (m.close) m.close();
+    m.raw.getTracks().forEach((t) => t.stop());
+  }
+
+  releaseMic() {
+    this.releaseMicObj(this.mic);
+    this.mic = null;
+    this.micStream = null;
+    this.micTrack = null;
   }
 
   leave(notify = true) {
@@ -193,8 +233,7 @@ export class Voice {
     this.pendingIce = [];
     this.chain = Promise.resolve();
     this.stopScreen(false);
-    if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
-    this.micStream = null;
+    this.releaseMic();
     this.micTrack = null;
     for (const id of [...this.remote.keys()]) this.dropRemote(id);
     this.stopMeters();
@@ -407,15 +446,13 @@ export class Voice {
   async restartMic() {
     if (!this.pc) return;
     try {
-      const stream = await this.acquireMic();
-      const track = stream.getAudioTracks()[0];
-      if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
-      this.micStream = stream;
-      this.micTrack = track;
-      this.applyMicGate();
-      const t = this.sendTransceiver("0");
-      if (t) await t.sender.replaceTrack(track);
-      this.localAnalyser = null;
+      const m = await this.processMic(await this.acquireMic());
+      if (!this.pc) {
+        this.releaseMicObj(m);
+        return;
+      }
+      this.releaseMic();
+      await this.setMic(m);
     } catch (e) {
       this.hooks.onError("Не удалось переключить микрофон: " + e.message);
     }
@@ -599,13 +636,16 @@ export class Voice {
 }
 
 /** Индикатор уровня микрофона для проверки в настройках. */
-export async function micTest(constraints, onLevel) {
+export async function micTest(constraints, onLevel, rnnoise = false) {
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  // проверяем ровно то, что услышат другие: с шумодавом, если он включён
+  let ns = null;
+  if (rnnoise && noiseSuppressionSupported()) ns = await suppressNoise(stream).catch(() => null);
   const AC = window.AudioContext || window.webkitAudioContext;
   const ctx = new AC();
   const an = ctx.createAnalyser();
   an.fftSize = 512;
-  ctx.createMediaStreamSource(stream).connect(an);
+  ctx.createMediaStreamSource(ns ? ns.stream : stream).connect(an);
   const buf = new Float32Array(512);
   const timer = setInterval(() => {
     an.getFloatTimeDomainData(buf);
@@ -615,6 +655,7 @@ export async function micTest(constraints, onLevel) {
   }, 50);
   return () => {
     clearInterval(timer);
+    if (ns) ns.close();
     stream.getTracks().forEach((t) => t.stop());
     ctx.close();
   };

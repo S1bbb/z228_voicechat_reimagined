@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
+  rnnoise: false,
   pushToTalk: false,
   pttKey: "",
   screenQuality: "1080p30",
@@ -2007,7 +2008,7 @@ async function settingsVoice(c) {
       return;
     }
     try {
-      stopMicTest = await micTest(voice.micConstraints(), (lvl) => (meter.firstChild.style.width = Math.round(lvl * 100) + "%"));
+      stopMicTest = await micTest(voice.micConstraints(), (lvl) => (meter.firstChild.style.width = Math.round(lvl * 100) + "%"), S.settings.rnnoise);
       testBtn.textContent = "Остановить";
       fillDevices(); // после разрешения появляются названия устройств
     } catch (e) {
@@ -2053,7 +2054,19 @@ async function settingsVoice(c) {
     voice.restartMic();
   };
   c.append(
-    toggleRow("Шумоподавление", "Убирает фоновый шум (клавиатура, вентилятор).", s.noiseSuppression, (v) => ((s.noiseSuppression = v), restart())),
+    toggleRow(
+      "Шумодав RNNoise",
+      "Нейросеть убирает клавиатуру, вентилятор, шум улицы — заметно лучше встроенного. Нагрузка на процессор — около процента. Проверьте кнопкой «Проверить» выше.",
+      s.rnnoise,
+      (v) => {
+        s.rnnoise = v;
+        restart();
+        renderSettings();
+      }
+    ),
+    ...(s.rnnoise
+      ? []
+      : [toggleRow("Шумоподавление браузера", "Простое встроенное шумоподавление. С RNNoise не нужно.", s.noiseSuppression, (v) => ((s.noiseSuppression = v), restart()))]),
     toggleRow("Эхоподавление", "Нужно, если вы без наушников.", s.echoCancellation, (v) => ((s.echoCancellation = v), restart())),
     toggleRow("Автоматическая регулировка усиления", null, s.autoGainControl, (v) => ((s.autoGainControl = v), restart()))
   );
