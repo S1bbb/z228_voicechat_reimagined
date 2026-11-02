@@ -493,7 +493,19 @@ async function joinVoice(id, silent = false) {
     return;
   }
   openStage(id);
-  await voice.join(id, S.me.id);
+  if (typeof RTCPeerConnection === "undefined") {
+    toast("В этом браузере отключён WebRTC (часто это делают расширения-блокировщики или VPN-расширения). Отключите их для этого сайта или откройте чат в другом браузере.", "error");
+    return;
+  }
+  try {
+    await voice.join(id, S.me.id);
+  } catch (e) {
+    console.error("voice join", e);
+    toast("Не удалось подключиться к голосу: " + (e.message || e.name), "error");
+    voice.leave(false);
+    renderAll();
+    return;
+  }
   if (!silent) playSfx("join");
   send("voice-state", { muted: S.muted, deafened: S.deafened, screen: false });
 }

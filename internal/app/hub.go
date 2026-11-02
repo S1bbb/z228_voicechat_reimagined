@@ -249,11 +249,13 @@ func normalizeNick(n string) (string, bool) {
 
 func (h *Hub) register(s *session, m *inMsg) bool {
 	if h.opts.ServerPassword != "" && subtle.ConstantTimeCompare([]byte(m.Password), []byte(h.opts.ServerPassword)) != 1 {
+		log.Printf("отказ входа (%s): неверный пароль сервера", s.conn.RemoteAddr())
 		s.send("hello-rejected", map[string]any{"reason": "password", "message": "Неверный пароль сервера."})
 		return false
 	}
 	nick, ok := normalizeNick(m.Nickname)
 	if !ok {
+		log.Printf("отказ входа (%s): плохой ник %q", s.conn.RemoteAddr(), m.Nickname)
 		s.send("hello-rejected", map[string]any{"reason": "nickname", "message": "Ник: от 1 до 32 символов, без < >."})
 		return false
 	}
@@ -268,6 +270,7 @@ func (h *Hub) register(s *session, m *inMsg) bool {
 	old := h.byNick[key]
 	if old != nil && old.clientID != clientID {
 		h.mu.Unlock()
+		log.Printf("отказ входа (%s): ник %q уже занят", s.conn.RemoteAddr(), nick)
 		s.send("hello-rejected", map[string]any{"reason": "nickname-taken", "message": "Этот ник уже занят."})
 		return false
 	}
@@ -282,6 +285,7 @@ func (h *Hub) register(s *session, m *inMsg) bool {
 
 	if old != nil {
 		// Тот же браузер переподключился (обновил вкладку/открыл вторую) — старую сессию закрываем.
+		log.Printf("%s: вход из другой вкладки/окна того же браузера — старая сессия закрыта", nick)
 		old.send("replaced", map[string]any{"message": "Вы подключились из другой вкладки."})
 		h.dropSession(old)
 	}

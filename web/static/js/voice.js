@@ -83,29 +83,6 @@ export class Voice {
     this.hooks.onState("connecting");
     this.audioCtx();
 
-    let mic = null;
-    try {
-      if (!window.isSecureContext) throw Object.assign(new Error("insecure"), { name: "InsecureContext" });
-      mic = await this.acquireMic();
-    } catch (e) {
-      if (this.joinId !== joinId) return;
-      const why =
-        e.name === "InsecureContext"
-          ? "Микрофон доступен только по HTTPS (или на localhost). Вы подключены только на прослушивание."
-          : e.name === "NotAllowedError"
-            ? "Нет доступа к микрофону — разрешите его в настройках сайта. Вы подключены только на прослушивание."
-            : "Микрофон не найден. Вы подключены только на прослушивание.";
-      this.hooks.onError(why);
-    }
-    if (this.joinId !== joinId) {
-      // пока ждали разрешения на микрофон, начался другой вход или выход
-      if (mic) mic.getTracks().forEach((t) => t.stop());
-      return;
-    }
-    if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
-    this.micStream = mic;
-    this.micTrack = mic ? mic.getAudioTracks()[0] || null : null;
-
     const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
     this.pc = pc;
     pc.onicecandidate = (e) => {
@@ -121,9 +98,52 @@ export class Voice {
         this.hooks.onError("Не удалось установить голосовое соединение с сервером. Проверьте, что UDP/TCP-порт голоса открыт.");
       } else if (st === "disconnected") this.hooks.onState("connecting");
     };
-    this.applyMicGate();
     this.startMeters();
     this.send("voice-join", { channelId, joinId });
+    // Микрофон подключаем параллельно: пока браузер ждёт разрешения, голос уже работает на приём,
+    // и вход не «зависает», если окошко разрешения закрыли или оно спряталось.
+    this.attachMic(joinId);
+  }
+
+  async attachMic(joinId) {
+    let mic = null;
+    const hint = setTimeout(() => {
+      if (this.joinId === joinId && !this.micTrack) {
+        this.hooks.onError("Браузер ждёт разрешения на микрофон — нажмите на значок 🔒/🎤 в адресной строке и разрешите доступ. Пока вы только слушаете.");
+      }
+    }, 5000);
+    try {
+      if (!window.isSecureContext) throw Object.assign(new Error("insecure"), { name: "InsecureContext" });
+      mic = await this.acquireMic();
+    } catch (e) {
+      clearTimeout(hint);
+      if (this.joinId !== joinId) return;
+      const why =
+        e.name === "InsecureContext"
+          ? "Микрофон доступен только по HTTPS (или на localhost). Вы подключены только на прослушивание."
+          : e.name === "NotAllowedError"
+            ? "Нет доступа к микрофону — разрешите его в настройках сайта (значок 🔒 в адресной строке). Вы подключены только на прослушивание."
+            : e.name === "NotReadableError"
+              ? "Микрофон занят другой программой или недоступен. Вы подключены только на прослушивание."
+              : "Микрофон не найден. Вы подключены только на прослушивание.";
+      this.hooks.onError(why);
+      return;
+    }
+    clearTimeout(hint);
+    if (this.joinId !== joinId) {
+      // пока ждали разрешения, начался другой вход или выход
+      mic.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
+    this.micStream = mic;
+    this.micTrack = mic.getAudioTracks()[0] || null;
+    this.localAnalyser = null;
+    this.applyMicGate();
+    // если offer уже обработан — подставляем трек в готовый transceiver, иначе это сделает onOffer
+    const t = this.sendTransceiver("0");
+    if (t && t.sender.track !== this.micTrack) await t.sender.replaceTrack(this.micTrack).catch(() => {});
+    if (this.hooks.onMic) this.hooks.onMic(true);
   }
 
   leave(notify = true) {
