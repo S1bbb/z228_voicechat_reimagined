@@ -74,13 +74,22 @@ export function avatarColor(nick) {
   return AVATAR_COLORS[hashString(String(nick).toLowerCase()) % AVATAR_COLORS.length];
 }
 
+let avatarSource = () => "";
+
+/** Откуда брать картинку аватарки по нику (задаёт app.js). */
+export function setAvatarSource(fn) {
+  avatarSource = fn;
+}
+
 export function avatar(nick, size = 40, extraClass = "") {
+  const url = avatarSource(String(nick));
+  const style = { width: size + "px", height: size + "px", background: avatarColor(nick), fontSize: Math.round(size * 0.42) + "px" };
+  if (url) {
+    style.background = `${avatarColor(nick)} center / cover no-repeat url("${encodeURI(url)}")`;
+    return h("div.avatar.has-image" + (extraClass ? "." + extraClass : ""), { style, role: "img", "aria-label": String(nick) });
+  }
   const letter = Array.from(String(nick).trim())[0] || "?";
-  return h(
-    "div.avatar" + (extraClass ? "." + extraClass : ""),
-    { style: { width: size + "px", height: size + "px", background: avatarColor(nick), fontSize: Math.round(size * 0.42) + "px" } },
-    letter.toUpperCase()
-  );
+  return h("div.avatar" + (extraClass ? "." + extraClass : ""), { style }, letter.toUpperCase());
 }
 
 // ---------- время ----------

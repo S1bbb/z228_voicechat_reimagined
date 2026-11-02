@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS messages(
 	edited_at   INTEGER
 );
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel_id, id);
+CREATE TABLE IF NOT EXISTS avatars(
+	nick       TEXT PRIMARY KEY, -- ник в нижнем регистре
+	url        TEXT NOT NULL,
+	updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS reactions(
 	message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
 	emoji      TEXT NOT NULL,
@@ -148,6 +153,39 @@ func (s *Store) GetSetting(ctx context.Context, key string) (string, bool, error
 func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return err
+}
+
+// ---------- avatars ----------
+
+// Avatars — все аватарки: ник в нижнем регистре -> URL картинки.
+func (s *Store) Avatars(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT nick, url FROM avatars`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var nick, url string
+		if err := rows.Scan(&nick, &url); err != nil {
+			return nil, err
+		}
+		out[nick] = url
+	}
+	return out, rows.Err()
+}
+
+// SetAvatar ставит аватарку нику; пустой url — убрать.
+func (s *Store) SetAvatar(ctx context.Context, nick, url string) error {
+	nick = strings.ToLower(nick)
+	if url == "" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM avatars WHERE nick=?`, nick)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO avatars(nick,url,updated_at) VALUES(?,?,?) ON CONFLICT(nick) DO UPDATE SET url=excluded.url, updated_at=excluded.updated_at`,
+		nick, url, nowMs())
 	return err
 }
 

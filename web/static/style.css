@@ -357,7 +357,7 @@ a:hover {
 }
 
 .sidebar {
-  width: 240px;
+  width: var(--sidebar-w, 240px);
   flex-shrink: 0;
   background: var(--bg-secondary);
   border-right: 1px solid var(--border);
@@ -1318,7 +1318,8 @@ a:hover {
 /* ---------- участники ---------- */
 
 .members {
-  width: 240px;
+  width: var(--members-w, 240px);
+  position: relative;
   flex-shrink: 0;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border);
@@ -2075,5 +2076,95 @@ a:hover {
   .round-btn {
     width: 48px;
     height: 48px;
+  }
+}
+
+/* ---------- изменение ширины панелей ---------- */
+
+/* Ручка — нулевой ширины элемент между панелями; область захвата шире самой линии. */
+.resizer {
+  position: relative;
+  width: 0;
+  flex-shrink: 0;
+  z-index: 25;
+}
+.resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -1px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s;
+  pointer-events: none;
+}
+.resizer:hover::after,
+.resizer.dragging::after {
+  background: var(--brand);
+}
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+body.resizing video {
+  pointer-events: none;
+}
+@media (max-width: 1100px) {
+  #membersResizer {
+    display: none;
+  }
+}
+
+/* ---------- профиль ---------- */
+
+.avatar.has-image {
+  color: transparent;
+}
+.profile-edit {
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-secondary);
+  max-width: 660px;
+}
+.profile-edit-banner {
+  height: 80px;
+}
+.profile-edit-body {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  padding: 0 16px 16px;
+  flex-wrap: wrap;
+}
+.profile-edit-body > .avatar {
+  margin-top: -40px;
+  box-shadow: 0 0 0 6px var(--bg-secondary);
+}
+.profile-edit-body > .avatar:hover {
+  filter: brightness(0.8);
+}
+.profile-edit-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--header-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .resizer {
+    display: none;
   }
 }

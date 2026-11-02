@@ -1,4 +1,4 @@
-import { $, $$, h, avatar, avatarColor, lsGet, lsSet, randomId, renderMarkdown, mentionsMe, isEmojiOnly, fmtTime, fmtFull, fmtStamp, fmtDay, sameDay, fmtSize } from "./util.js";
+import { $, $$, h, avatar, avatarColor, setAvatarSource, lsGet, lsSet, randomId, renderMarkdown, mentionsMe, isEmojiOnly, fmtTime, fmtFull, fmtStamp, fmtDay, sameDay, fmtSize } from "./util.js";
 import { icon } from "./icons.js";
 import { Voice, micTest, sfx } from "./voice.js";
 import { EMOJI_GROUPS, QUICK_REACTIONS } from "./emoji.js";
@@ -58,7 +58,9 @@ const S = {
   ping: 0,
   focusTile: "",
   prevVoiceMembers: null,
+  avatars: {}, // ник в нижнем регистре -> url
 };
+setAvatarSource((nick) => S.avatars[nick.toLowerCase()] || "");
 lsSet("z228.clientId", S.clientId);
 
 const voice = new Voice((type, payload) => send(type, payload), {
@@ -234,6 +236,13 @@ function onMessage(m) {
       renderAll();
       if (settingsSection === "admin") renderSettings();
       return;
+    case "avatar":
+      if (m.url) S.avatars[m.nickname] = m.url;
+      else delete S.avatars[m.nickname];
+      renderAll();
+      if (S.view === "text") renderMessages({});
+      if (settingsSection === "profile") renderSettings();
+      return;
     case "pong":
       S.ping = Math.round(performance.now() - m.t);
       renderVoicePanel();
@@ -251,6 +260,7 @@ function onReady(m) {
   S.admin = !!m.admin;
   S.server = m.server || S.server;
   S.channels = m.channels || [];
+  S.avatars = m.avatars || {};
   S.users = m.users || [];
   S.maxUploadBytes = m.maxUploadBytes || S.maxUploadBytes;
   S.msgs.clear();
@@ -1536,7 +1546,10 @@ function userMenu(e, u) {
       })
     );
   }
-  if (isMe) menu.append(menuItem("Настройки", () => openSettings("voice"), { iconName: "gear" }));
+  if (isMe) {
+    menu.append(menuItem("Сменить аватарку", () => openSettings("profile"), { iconName: "edit" }));
+    menu.append(menuItem("Настройки", () => openSettings("voice"), { iconName: "gear" }));
+  }
   if (S.admin && !isMe && !u.offline) {
     menu.append(h("div.menu-sep"));
     menu.append(menuItem("Заглушить для всех", () => (send("server-mute", { sessionId: u.id, value: !u.serverMuted }), closeLayer()), { check: !!u.serverMuted }));
@@ -1771,6 +1784,7 @@ function renderSettings() {
       "div.settings-nav-inner",
       null,
       h("div.category", null, "Настройки приложения"),
+      navBtn("profile", "Профиль"),
       navBtn("voice", "Голос и видео"),
       navBtn("look", "Внешний вид"),
       navBtn("notify", "Уведомления"),
@@ -1790,7 +1804,7 @@ function renderSettings() {
     h("div.settings-close", null, h("button.icon-btn", { html: icon("close", 18), onclick: closeSettings }), "ESC")
   );
   settingsEl.append(nav, wrap);
-  ({ voice: settingsVoice, look: settingsLook, notify: settingsNotify, keys: settingsKeys, admin: settingsAdmin, donate: settingsDonate })[settingsSection](content);
+  ({ profile: settingsProfile, voice: settingsVoice, look: settingsLook, notify: settingsNotify, keys: settingsKeys, admin: settingsAdmin, donate: settingsDonate })[settingsSection](content);
 }
 
 async function settingsVoice(c) {
@@ -1925,6 +1939,74 @@ async function settingsVoice(c) {
 
 function keyLabel(code) {
   return code.replace(/^Key/, "").replace(/^Digit/, "").replace("Backquote", "`").replace("Space", "Пробел").replace("ControlLeft", "Left Ctrl").replace("ShiftLeft", "Left Shift").replace("AltLeft", "Left Alt");
+}
+
+// ---------- профиль и аватарка ----------
+
+function settingsProfile(c) {
+  const nick = S.me.nickname;
+  const has = !!S.avatars[nick.toLowerCase()];
+  const input = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: true });
+  const status = h("div.muted.small", { style: { marginTop: "8px" } });
+  input.onchange = async () => {
+    const file = input.files[0];
+    input.value = "";
+    if (!file) return;
+    status.textContent = "Загрузка…";
+    try {
+      const prepared = await prepareAvatar(file);
+      const res = await upload(prepared, () => {}, {});
+      send("set-avatar", { text: res.url });
+      status.textContent = "";
+      toast("Аватарка обновлена.", "ok");
+    } catch (e) {
+      status.textContent = "";
+      toast("Не удалось загрузить аватарку: " + e.message, "error");
+    }
+  };
+  const big = avatar(nick, 96);
+  big.style.cursor = "pointer";
+  big.title = "Сменить аватарку";
+  big.onclick = () => input.click();
+  c.append(
+    h("h2", null, "Профиль"),
+    h(
+      "div.profile-edit",
+      null,
+      h("div.profile-edit-banner", { style: { background: avatarColor(nick) } }),
+      h(
+        "div.profile-edit-body",
+        null,
+        big,
+        h("div", { style: { flex: 1, minWidth: 0 } }, h("div.profile-edit-name", null, nick), h("div.muted.small", null, "Аватарка привязана к нику и видна всем.")),
+        h(
+          "div",
+          { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+          h("button.btn.btn-primary", { onclick: () => input.click() }, "Сменить аватарку"),
+          has ? h("button.btn", { onclick: () => send("set-avatar", { text: "" }) }, "Убрать") : null
+        )
+      )
+    ),
+    status,
+    input,
+    h("p.muted.small", { style: { marginTop: "16px" } }, "Картинка обрежется до квадрата 256×256. GIF до 3 МБ остаётся анимированным. Сменить ник: «Выйти» и войти под новым.")
+  );
+}
+
+/** Квадратная обрезка до 256px; анимированные GIF небольшого размера оставляем как есть. */
+async function prepareAvatar(file) {
+  if (!file.type.startsWith("image/")) throw new Error("это не картинка");
+  if (file.type === "image/gif" && file.size <= 3 << 20) return file;
+  const bmp = await createImageBitmap(file);
+  const side = Math.min(bmp.width, bmp.height);
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 256;
+  canvas.getContext("2d").drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, 256, 256);
+  bmp.close?.();
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/webp", 0.9));
+  if (blob && blob.type === "image/webp") return new File([blob], "avatar.webp", { type: "image/webp" });
+  const png = await new Promise((res) => canvas.toBlob(res, "image/png"));
+  return new File([png], "avatar.png", { type: "image/png" });
 }
 
 function settingsLook(c) {
@@ -2118,9 +2200,63 @@ function closeMobileSidebar() {
   $("#app").classList.remove("show-sidebar");
 }
 
+// ============================================================ ширина панелей
+
+const PANEL_LIMITS = { sidebar: [200, 440, 240], members: [180, 420, 240] };
+
+function applyPanelWidths() {
+  const w = lsGet("z228.panels", {});
+  for (const [name, [min, max]] of Object.entries(PANEL_LIMITS)) {
+    if (w[name]) document.documentElement.style.setProperty(`--${name}-w`, Math.min(max, Math.max(min, w[name])) + "px");
+    else document.documentElement.style.removeProperty(`--${name}-w`);
+  }
+}
+
+function bindResizer(handle, name, panel, fromRight) {
+  const [min, max] = PANEL_LIMITS[name];
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = panel.getBoundingClientRect().width;
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add("dragging");
+    document.body.classList.add("resizing");
+    let width = startW;
+    const move = (ev) => {
+      const dx = ev.clientX - startX;
+      width = Math.round(Math.min(max, Math.max(min, startW + (fromRight ? -dx : dx))));
+      document.documentElement.style.setProperty(`--${name}-w`, width + "px");
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      handle.classList.remove("dragging");
+      document.body.classList.remove("resizing");
+      const w = lsGet("z228.panels", {});
+      w[name] = width;
+      lsSet("z228.panels", w);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  });
+  handle.addEventListener("dblclick", () => {
+    const w = lsGet("z228.panels", {});
+    delete w[name];
+    lsSet("z228.panels", w);
+    applyPanelWidths();
+  });
+}
+
 // ============================================================ события
 
 function bindUi() {
+  applyPanelWidths();
+  bindResizer($("#sidebarResizer"), "sidebar", $("#sidebar"), false);
+  bindResizer($("#membersResizer"), "members", $("#members"), true);
+
   for (const el of $$("[data-icon]")) el.innerHTML = icon(el.dataset.icon, el.classList.contains("round-btn") ? 24 : 20);
 
   $("#micBtn").onclick = toggleMute;
@@ -2137,7 +2273,10 @@ function bindUi() {
   $("#membersToggle").onclick = () => {
     const app = $("#app");
     if (matchMedia("(max-width: 1100px)").matches) app.classList.toggle("show-members");
-    else $("#members").hidden = !$("#members").hidden;
+    else {
+      $("#members").hidden = !$("#members").hidden;
+      $("#membersResizer").hidden = $("#members").hidden;
+    }
   };
   $("#mobileMenuBtn").onclick = () => $("#app").classList.toggle("show-sidebar");
   $("#main").addEventListener("click", (e) => {

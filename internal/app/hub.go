@@ -290,6 +290,10 @@ func (h *Hub) register(s *session, m *inMsg) bool {
 	if err != nil {
 		log.Printf("channels: %v", err)
 	}
+	avatars, err := h.opts.Store.Avatars(context.Background())
+	if err != nil {
+		log.Printf("avatars: %v", err)
+	}
 	h.mu.Lock()
 	users := h.usersLocked()
 	isAdmin := s.admin
@@ -302,6 +306,7 @@ func (h *Hub) register(s *session, m *inMsg) bool {
 		"channels":       channels,
 		"users":          users,
 		"maxUploadBytes": h.opts.MaxUploadBytes,
+		"avatars":        avatars,
 	})
 	log.Printf("+ %s", nick)
 	h.broadcastPresence()
@@ -490,6 +495,30 @@ func (h *Hub) handle(s *session, m *inMsg) {
 			return
 		}
 		h.broadcast("message-update", map[string]any{"message": msg}, nil)
+
+	case "set-avatar":
+		if !s.allow(2) {
+			s.sendError("Слишком часто, подождите немного.")
+			return
+		}
+		url := strings.TrimSpace(m.Text)
+		if url != "" {
+			ok := uploadURL.MatchString(url) && strings.HasPrefix(mimeForExt(filepath.Ext(url)), "image/")
+			if ok {
+				_, err := os.Stat(filepath.Join(h.opts.UploadDir, filepath.Base(url)))
+				ok = err == nil
+			}
+			if !ok {
+				s.sendError("Аватарка должна быть картинкой (PNG, JPG, GIF, WebP).")
+				return
+			}
+		}
+		if err := st.SetAvatar(ctx, s.nickname, url); err != nil {
+			log.Printf("avatar: %v", err)
+			s.sendError("Не удалось сохранить аватарку.")
+			return
+		}
+		h.broadcast("avatar", map[string]any{"nickname": strings.ToLower(s.nickname), "url": url}, nil)
 
 	case "typing":
 		h.broadcast("typing", map[string]any{"channelId": m.ChannelID, "userId": s.id, "nickname": s.nickname}, s)
