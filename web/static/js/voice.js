@@ -13,6 +13,7 @@ export class Voice {
     this.send = send;
     this.hooks = hooks;
     this.pc = null;
+    this.joinId = "";
     this.channelId = 0;
     this.micStream = null;
     this.micTrack = null;
@@ -73,18 +74,21 @@ export class Voice {
 
   async join(channelId, myId) {
     if (this.pc) this.leave(false);
+    // У каждого входа свой id: сервер помечает им offer/кандидатов, и всё, что относится
+    // к прошлому входу (двойной клик, переподключение), отбрасывается с обеих сторон.
+    const joinId = Math.random().toString(36).slice(2, 12);
+    this.joinId = joinId;
     this.myId = myId;
     this.channelId = channelId;
     this.hooks.onState("connecting");
     this.audioCtx();
 
+    let mic = null;
     try {
       if (!window.isSecureContext) throw Object.assign(new Error("insecure"), { name: "InsecureContext" });
-      this.micStream = await this.acquireMic();
-      this.micTrack = this.micStream.getAudioTracks()[0] || null;
+      mic = await this.acquireMic();
     } catch (e) {
-      this.micStream = null;
-      this.micTrack = null;
+      if (this.joinId !== joinId) return;
       const why =
         e.name === "InsecureContext"
           ? "Микрофон доступен только по HTTPS (или на localhost). Вы подключены только на прослушивание."
@@ -93,12 +97,19 @@ export class Voice {
             : "Микрофон не найден. Вы подключены только на прослушивание.";
       this.hooks.onError(why);
     }
-    if (this.channelId !== channelId) return; // пока ждали разрешения, пользователь передумал
+    if (this.joinId !== joinId) {
+      // пока ждали разрешения на микрофон, начался другой вход или выход
+      if (mic) mic.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
+    this.micStream = mic;
+    this.micTrack = mic ? mic.getAudioTracks()[0] || null : null;
 
     const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
     this.pc = pc;
     pc.onicecandidate = (e) => {
-      if (e.candidate && this.pc === pc) this.send("rtc-candidate", { candidate: e.candidate.toJSON() });
+      if (e.candidate && this.pc === pc) this.send("rtc-candidate", { candidate: e.candidate.toJSON(), joinId });
     };
     pc.ontrack = (e) => this.onTrack(e);
     pc.onconnectionstatechange = () => {
@@ -112,7 +123,7 @@ export class Voice {
     };
     this.applyMicGate();
     this.startMeters();
-    this.send("voice-join", { channelId });
+    this.send("voice-join", { channelId, joinId });
   }
 
   leave(notify = true) {
@@ -123,6 +134,7 @@ export class Voice {
       } catch {}
     }
     this.pc = null;
+    this.joinId = "";
     this.channelId = 0;
     this.pendingIce = [];
     this.chain = Promise.resolve();
@@ -139,9 +151,9 @@ export class Voice {
 
   // ---------- сигналинг ----------
 
-  onOffer(sdp) {
+  onOffer(sdp, joinId) {
     const pc = this.pc;
-    if (!pc) return;
+    if (!pc || joinId !== this.joinId) return;
     this.chain = this.chain
       .then(async () => {
         if (this.pc !== pc) return;
@@ -157,7 +169,7 @@ export class Voice {
         }
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        this.send("rtc-answer", { sdp: pc.localDescription.sdp });
+        this.send("rtc-answer", { sdp: pc.localDescription.sdp, joinId });
         const queued = this.pendingIce;
         this.pendingIce = [];
         for (const c of queued) await pc.addIceCandidate(c).catch(() => {});
@@ -165,9 +177,9 @@ export class Voice {
       .catch((e) => console.error("rtc offer", e));
   }
 
-  onCandidate(c) {
+  onCandidate(c, joinId) {
     const pc = this.pc;
-    if (!pc || !c) return;
+    if (!pc || !c || joinId !== this.joinId) return;
     if (!pc.remoteDescription) {
       this.pendingIce.push(c);
       return;

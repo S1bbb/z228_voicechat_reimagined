@@ -31,6 +31,8 @@ type client struct {
 	gotFrom chan string // stream id полученного аудиотрека
 	packets chan int
 	count   atomic.Int64
+	joinID  string
+	watch   string // чей трек считаем (в канале могут сидеть живые люди)
 }
 
 func dial(url, nick string) *client {
@@ -52,8 +54,13 @@ func dial(url, nick string) *client {
 			_ = json.Unmarshal(raw, &m)
 			switch m["type"] {
 			case "rtc-offer":
-				go c.onOffer(m["sdp"].(string))
+				if m["joinId"] == c.joinID {
+					go c.onOffer(m["sdp"].(string))
+				}
 			case "rtc-candidate":
+				if m["joinId"] != c.joinID {
+					continue
+				}
 				b, _ := json.Marshal(m["candidate"])
 				var ci webrtc.ICECandidateInit
 				_ = json.Unmarshal(b, &ci)
@@ -109,10 +116,13 @@ func (c *client) joinVoice(channelID float64) {
 	}
 	pc.OnICECandidate(func(ci *webrtc.ICECandidate) {
 		if ci != nil {
-			c.send(map[string]any{"type": "rtc-candidate", "candidate": ci.ToJSON()})
+			c.send(map[string]any{"type": "rtc-candidate", "candidate": ci.ToJSON(), "joinId": c.joinID})
 		}
 	})
 	pc.OnTrack(func(t *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		if c.watch != "" && t.StreamID() != c.watch {
+			return
+		}
 		c.gotFrom <- t.StreamID()
 		n := 0
 		buf := make([]byte, 1500)
@@ -128,7 +138,8 @@ func (c *client) joinVoice(channelID float64) {
 		}
 	})
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) { log.Printf("%s: RTC %s", c.name, s) })
-	c.send(map[string]any{"type": "voice-join", "channelId": channelID})
+	c.joinID = c.name + "-join"
+	c.send(map[string]any{"type": "voice-join", "channelId": channelID, "joinId": c.joinID})
 }
 
 func (c *client) onOffer(sdp string) {
@@ -141,7 +152,7 @@ func (c *client) onOffer(sdp string) {
 		log.Fatalf("%s: answer: %v", c.name, err)
 	}
 	_ = pc.SetLocalDescription(ans)
-	c.send(map[string]any{"type": "rtc-answer", "sdp": ans.SDP})
+	c.send(map[string]any{"type": "rtc-answer", "sdp": ans.SDP, "joinId": c.joinID})
 }
 
 func (c *client) streamSilence(stop chan struct{}) {
@@ -186,8 +197,11 @@ func main() {
 	// на чистой БД сид создаёт каналы 1–2 (текст) и 3–4 (голос)
 	voiceID := float64(3)
 
+	// как двойной клик: лишний вход до настоящего — сервер должен корректно его заменить
+	a.send(map[string]any{"type": "voice-join", "channelId": voiceID, "joinId": "stale"})
 	a.joinVoice(voiceID)
 	a.wait("voice-joined")
+	b.watch = a.id
 	b.joinVoice(voiceID)
 	b.wait("voice-joined")
 	stop := make(chan struct{})

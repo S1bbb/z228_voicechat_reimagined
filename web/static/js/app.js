@@ -199,10 +199,12 @@ function onMessage(m) {
     case "typing":
       return onTyping(m.channelId, m.nickname);
     case "voice-joined":
+      if (m.joinId !== voice.joinId) return;
       S.voiceChannelId = m.channelId;
       renderVoicePanel();
       return;
     case "voice-left":
+      if (m.joinId && m.joinId !== voice.joinId) return; // хвост прошлого входа
       if (voice.active) {
         voice.leave(false);
         sfx("leave");
@@ -212,10 +214,10 @@ function onMessage(m) {
       renderAll();
       return;
     case "rtc-offer":
-      voice.onOffer(m.sdp);
+      voice.onOffer(m.sdp, m.joinId);
       return;
     case "rtc-candidate":
-      voice.onCandidate(m.candidate);
+      voice.onCandidate(m.candidate, m.joinId);
       return;
     case "admin":
       S.admin = !!m.ok;

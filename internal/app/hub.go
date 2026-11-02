@@ -71,6 +71,7 @@ type session struct {
 	camera       bool
 	serverMuted  bool // заглушён админом (держится до переподключения ника)
 	peer         *sfu.Peer
+	joinID       string // id текущего входа в голос; сигналинг со старым id игнорируется
 
 	// антиспам (только из read-горутины)
 	bucket     float64
@@ -95,6 +96,7 @@ type inMsg struct {
 	Name        string                   `json:"name"`
 	Dir         int                      `json:"dir"`
 	SessionID   string                   `json:"sessionId"`
+	JoinID      string                   `json:"joinId"`
 	Muted       *bool                    `json:"muted"`
 	Deafened    *bool                    `json:"deafened"`
 	Screen      *bool                    `json:"screen"`
@@ -493,7 +495,7 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		h.broadcast("typing", map[string]any{"channelId": m.ChannelID, "userId": s.id, "nickname": s.nickname}, s)
 
 	case "voice-join":
-		h.voiceJoin(s, m.ChannelID)
+		h.voiceJoin(s, m.ChannelID, m.JoinID)
 
 	case "voice-leave":
 		h.mu.Lock()
@@ -523,6 +525,9 @@ func (h *Hub) handle(s *session, m *inMsg) {
 	case "rtc-answer":
 		h.mu.Lock()
 		peer := s.peer
+		if m.JoinID != s.joinID {
+			peer = nil // ответ от прошлого входа в голос
+		}
 		h.mu.Unlock()
 		if peer != nil {
 			if err := peer.HandleAnswer(m.SDP); err != nil {
@@ -533,6 +538,9 @@ func (h *Hub) handle(s *session, m *inMsg) {
 	case "rtc-candidate":
 		h.mu.Lock()
 		peer := s.peer
+		if m.JoinID != s.joinID {
+			peer = nil
+		}
 		h.mu.Unlock()
 		if peer != nil && m.Candidate != nil {
 			if err := peer.HandleCandidate(*m.Candidate); err != nil {
@@ -574,15 +582,20 @@ func (h *Hub) handle(s *session, m *inMsg) {
 	}
 }
 
-func (h *Hub) voiceJoin(s *session, channelID int64) {
+func (h *Hub) voiceJoin(s *session, channelID int64, joinID string) {
 	ch, err := h.opts.Store.Channel(context.Background(), channelID)
 	if err != nil || ch.Kind != "voice" {
 		s.sendError("Голосовой канал не найден.")
 		return
 	}
+	// Пустой joinId шлют страницы старой версии (до F5) — для них проверка просто совпадает с "".
+	if len(joinID) > 64 {
+		joinID = joinID[:64]
+	}
 	h.mu.Lock()
 	old := s.peer
 	s.peer = nil
+	s.joinID = joinID
 	h.mu.Unlock()
 	if old != nil {
 		old.Close()
@@ -600,16 +613,24 @@ func (h *Hub) voiceJoin(s *session, channelID int64) {
 		}
 		h.mu.Unlock()
 		if changed {
-			s.send("voice-left", nil)
+			s.send("voice-left", map[string]any{"joinId": joinID})
 			h.broadcastPresence()
 		}
 	}
+	// Все сообщения этого соединения помечаем joinId, чтобы клиент отбросил хвосты прошлых входов.
+	signal := func(typ string, payload map[string]any) {
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		payload["joinId"] = joinID
+		s.send(typ, payload)
+	}
 	// Сигнал «voice-joined» должен уйти раньше первого offer.
-	s.send("voice-joined", map[string]any{"channelId": channelID})
-	peer, err = h.opts.SFU.Join(strconv.FormatInt(channelID, 10), s.id, s.send, onClosed)
+	signal("voice-joined", map[string]any{"channelId": channelID})
+	peer, err = h.opts.SFU.Join(strconv.FormatInt(channelID, 10), s.id, signal, onClosed)
 	if err != nil {
 		log.Printf("RTC join: %v", err)
-		s.send("voice-left", map[string]any{"message": "Не удалось подключиться к голосу."})
+		signal("voice-left", map[string]any{"message": "Не удалось подключиться к голосу."})
 		return
 	}
 	h.mu.Lock()
