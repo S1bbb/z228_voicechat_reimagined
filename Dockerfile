@@ -1,27 +1,17 @@
-FROM golang:1.23-alpine AS build
-
+FROM golang:1.24-alpine AS build
 WORKDIR /src
-
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY cmd ./cmd
 COPY internal ./internal
-COPY server ./server
+COPY web ./web
+ARG VERSION=docker
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/z228 ./cmd/server
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/z228_server ./cmd/server
-
-FROM alpine:3.20
-
-WORKDIR /app
-
-COPY --from=build /out/z228_server /app/z228_server
-COPY server /app/server
-
-EXPOSE 3000 3443
-
-ENV PORT=3000
-ENV HTTPS_PORT=3443
-ENV LISTEN_HOST="::"
-
-CMD ["/app/z228_server"]
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=build /out/z228 /usr/local/bin/z228
+VOLUME /data
+ENV DATA_DIR=/data
+EXPOSE 3000 3443 50000/udp 50000/tcp
+ENTRYPOINT ["z228"]

@@ -1,0 +1,843 @@
+// Package app — WebSocket-протокол: сессии, присутствие, чат, голос (через SFU) и админка.
+package app
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+
+	"github.com/gorilla/websocket"
+	"github.com/pion/webrtc/v4"
+
+	"zalupa228local/internal/sfu"
+	"zalupa228local/internal/store"
+)
+
+type Options struct {
+	Store          *store.Store
+	SFU            *sfu.SFU
+	ServerName     string
+	ServerPassword string
+	AdminPassword  string
+	UploadDir      string
+	MaxUploadBytes int64
+}
+
+type Hub struct {
+	opts Options
+
+	mu       sync.Mutex
+	sessions map[string]*session // по id сессии
+	byNick   map[string]*session // по нику в нижнем регистре
+	mutedBy  map[string]bool     // ники, заглушённые админом (до перезапуска сервера)
+}
+
+func NewHub(opts Options) *Hub {
+	return &Hub{opts: opts, sessions: map[string]*session{}, byNick: map[string]*session{}, mutedBy: map[string]bool{}}
+}
+
+type session struct {
+	hub      *Hub
+	id       string
+	clientID string
+	nickname string
+	conn     *websocket.Conn
+	out      chan []byte
+	done     chan struct{}
+	stopOnce sync.Once
+
+	// под hub.mu
+	admin        bool
+	voiceChannel int64
+	muted        bool
+	deafened     bool
+	screen       bool
+	camera       bool
+	serverMuted  bool // заглушён админом (держится до переподключения ника)
+	peer         *sfu.Peer
+
+	// антиспам (только из read-горутины)
+	bucket     float64
+	bucketTime time.Time
+}
+
+type inMsg struct {
+	Type        string                   `json:"type"`
+	Nickname    string                   `json:"nickname"`
+	ClientID    string                   `json:"clientId"`
+	Password    string                   `json:"password"`
+	AdminToken  string                   `json:"adminToken"`
+	ChannelID   int64                    `json:"channelId"`
+	Before      int64                    `json:"before"`
+	ID          int64                    `json:"id"`
+	Text        string                   `json:"text"`
+	ReplyTo     int64                    `json:"replyTo"`
+	Attachments []store.Attachment       `json:"attachments"`
+	Emoji       string                   `json:"emoji"`
+	Nonce       string                   `json:"nonce"`
+	Kind        string                   `json:"kind"`
+	Name        string                   `json:"name"`
+	Dir         int                      `json:"dir"`
+	SessionID   string                   `json:"sessionId"`
+	Muted       *bool                    `json:"muted"`
+	Deafened    *bool                    `json:"deafened"`
+	Screen      *bool                    `json:"screen"`
+	Camera      *bool                    `json:"camera"`
+	Value       bool                     `json:"value"`
+	SDP         string                   `json:"sdp"`
+	Candidate   *webrtc.ICECandidateInit `json:"candidate"`
+	T           float64                  `json:"t"`
+}
+
+type userView struct {
+	ID           string `json:"id"`
+	Nickname     string `json:"nickname"`
+	VoiceChannel int64  `json:"voiceChannelId"`
+	Muted        bool   `json:"muted"`
+	Deafened     bool   `json:"deafened"`
+	Screen       bool   `json:"screen"`
+	Camera       bool   `json:"camera"`
+	Admin        bool   `json:"admin"`
+	ServerMuted  bool   `json:"serverMuted"`
+}
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  4096,
+	WriteBufferSize: 4096,
+	CheckOrigin:     func(r *http.Request) bool { return true },
+}
+
+const (
+	pingEvery   = 25 * time.Second
+	readTimeout = 70 * time.Second
+	maxText     = 4000
+)
+
+func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	s := &session{hub: h, conn: conn, out: make(chan []byte, 512), done: make(chan struct{})}
+	go s.writeLoop()
+	s.readLoop()
+}
+
+func (s *session) writeLoop() {
+	t := time.NewTicker(pingEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case b := <-s.out:
+			_ = s.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := s.conn.WriteMessage(websocket.TextMessage, b); err != nil {
+				s.stop()
+				return
+			}
+		case <-t.C:
+			if err := s.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+				s.stop()
+				return
+			}
+		}
+	}
+}
+
+func (s *session) stop() {
+	s.stopOnce.Do(func() {
+		close(s.done)
+		_ = s.conn.Close()
+	})
+}
+
+func (s *session) sendRaw(b []byte) {
+	select {
+	case <-s.done:
+	case s.out <- b:
+	default:
+		log.Printf("ws %s: клиент не успевает читать, отключаем", s.nickname)
+		s.stop()
+	}
+}
+
+func (s *session) send(typ string, payload map[string]any) {
+	s.sendRaw(encode(typ, payload))
+}
+
+func (s *session) sendError(msg string) {
+	s.send("error", map[string]any{"message": msg})
+}
+
+func encode(typ string, payload map[string]any) []byte {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["type"] = typ
+	b, _ := json.Marshal(payload)
+	return b
+}
+
+func (s *session) readLoop() {
+	defer func() {
+		s.stop()
+		s.hub.unregister(s)
+	}()
+	s.conn.SetReadLimit(1 << 20)
+	_ = s.conn.SetReadDeadline(time.Now().Add(readTimeout))
+	s.conn.SetPongHandler(func(string) error {
+		return s.conn.SetReadDeadline(time.Now().Add(readTimeout))
+	})
+
+	registered := false
+	for {
+		_, raw, err := s.conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		_ = s.conn.SetReadDeadline(time.Now().Add(readTimeout))
+		var m inMsg
+		if err := json.Unmarshal(raw, &m); err != nil {
+			s.sendError("Некорректный JSON.")
+			continue
+		}
+		if !registered {
+			if m.Type != "hello" {
+				s.sendError("Сначала hello.")
+				continue
+			}
+			if !s.hub.register(s, &m) {
+				return
+			}
+			registered = true
+			continue
+		}
+		s.hub.handle(s, &m)
+	}
+}
+
+// ---------- регистрация ----------
+
+var nickBad = regexp.MustCompile(`[\x00-\x1f\x7f<>]`)
+
+func normalizeNick(n string) (string, bool) {
+	n = strings.Join(strings.Fields(n), " ")
+	if n == "" || len([]rune(n)) > 32 || nickBad.MatchString(n) {
+		return "", false
+	}
+	return n, true
+}
+
+func (h *Hub) register(s *session, m *inMsg) bool {
+	if h.opts.ServerPassword != "" && subtle.ConstantTimeCompare([]byte(m.Password), []byte(h.opts.ServerPassword)) != 1 {
+		s.send("hello-rejected", map[string]any{"reason": "password", "message": "Неверный пароль сервера."})
+		return false
+	}
+	nick, ok := normalizeNick(m.Nickname)
+	if !ok {
+		s.send("hello-rejected", map[string]any{"reason": "nickname", "message": "Ник: от 1 до 32 символов, без < >."})
+		return false
+	}
+	clientID := strings.TrimSpace(m.ClientID)
+	if len(clientID) < 8 || len(clientID) > 64 {
+		s.send("hello-rejected", map[string]any{"reason": "client", "message": "Некорректный clientId."})
+		return false
+	}
+
+	key := strings.ToLower(nick)
+	h.mu.Lock()
+	old := h.byNick[key]
+	if old != nil && old.clientID != clientID {
+		h.mu.Unlock()
+		s.send("hello-rejected", map[string]any{"reason": "nickname-taken", "message": "Этот ник уже занят."})
+		return false
+	}
+	s.id = randomHex(12)
+	s.clientID = clientID
+	s.nickname = nick
+	s.admin = h.opts.AdminPassword != "" && hmac.Equal([]byte(m.AdminToken), []byte(h.adminToken(clientID)))
+	s.serverMuted = h.mutedBy[key]
+	h.sessions[s.id] = s
+	h.byNick[key] = s
+	h.mu.Unlock()
+
+	if old != nil {
+		// Тот же браузер переподключился (обновил вкладку/открыл вторую) — старую сессию закрываем.
+		old.send("replaced", map[string]any{"message": "Вы подключились из другой вкладки."})
+		h.dropSession(old)
+	}
+
+	channels, err := h.opts.Store.Channels(context.Background())
+	if err != nil {
+		log.Printf("channels: %v", err)
+	}
+	h.mu.Lock()
+	users := h.usersLocked()
+	isAdmin := s.admin
+	h.mu.Unlock()
+	s.send("ready", map[string]any{
+		"sessionId":      s.id,
+		"nickname":       nick,
+		"admin":          isAdmin,
+		"server":         map[string]any{"name": h.opts.ServerName},
+		"channels":       channels,
+		"users":          users,
+		"maxUploadBytes": h.opts.MaxUploadBytes,
+	})
+	log.Printf("+ %s", nick)
+	h.broadcastPresence()
+	return true
+}
+
+func (h *Hub) dropSession(s *session) {
+	h.mu.Lock()
+	h.removeLocked(s)
+	peer := s.peer
+	s.peer = nil
+	s.voiceChannel = 0
+	h.mu.Unlock()
+	if peer != nil {
+		peer.Close()
+	}
+	s.stop()
+}
+
+func (h *Hub) removeLocked(s *session) bool {
+	if h.sessions[s.id] != s {
+		return false
+	}
+	delete(h.sessions, s.id)
+	if h.byNick[strings.ToLower(s.nickname)] == s {
+		delete(h.byNick, strings.ToLower(s.nickname))
+	}
+	return true
+}
+
+func (h *Hub) unregister(s *session) {
+	h.mu.Lock()
+	removed := h.removeLocked(s)
+	peer := s.peer
+	s.peer = nil
+	s.voiceChannel = 0
+	h.mu.Unlock()
+	if peer != nil {
+		peer.Close()
+	}
+	if removed {
+		log.Printf("- %s", s.nickname)
+		h.broadcastPresence()
+	}
+}
+
+func (h *Hub) adminToken(clientID string) string {
+	mac := hmac.New(sha256.New, []byte(h.opts.AdminPassword))
+	mac.Write([]byte("z228-admin:" + clientID))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (h *Hub) usersLocked() []userView {
+	out := make([]userView, 0, len(h.sessions))
+	for _, s := range h.sessions {
+		out = append(out, userView{
+			ID: s.id, Nickname: s.nickname, VoiceChannel: s.voiceChannel,
+			Muted: s.muted, Deafened: s.deafened, Screen: s.screen, Camera: s.camera, Admin: s.admin, ServerMuted: s.serverMuted,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Nickname) < strings.ToLower(out[j].Nickname) })
+	return out
+}
+
+func (h *Hub) broadcast(typ string, payload map[string]any, except *session) {
+	b := encode(typ, payload)
+	h.mu.Lock()
+	list := make([]*session, 0, len(h.sessions))
+	for _, s := range h.sessions {
+		if s != except {
+			list = append(list, s)
+		}
+	}
+	h.mu.Unlock()
+	for _, s := range list {
+		s.sendRaw(b)
+	}
+}
+
+func (h *Hub) broadcastPresence() {
+	h.mu.Lock()
+	users := h.usersLocked()
+	h.mu.Unlock()
+	h.broadcast("presence", map[string]any{"users": users}, nil)
+}
+
+func (h *Hub) broadcastChannels() {
+	channels, err := h.opts.Store.Channels(context.Background())
+	if err != nil {
+		log.Printf("channels: %v", err)
+		return
+	}
+	h.broadcast("channels", map[string]any{"channels": channels}, nil)
+}
+
+// ---------- обработка сообщений ----------
+
+func (s *session) allow(cost float64) bool {
+	const rate, burst = 2.0, 12.0 // 2 действия в секунду, всплеск до 12
+	now := time.Now()
+	if s.bucketTime.IsZero() {
+		s.bucket = burst
+	} else {
+		s.bucket = min(burst, s.bucket+now.Sub(s.bucketTime).Seconds()*rate)
+	}
+	s.bucketTime = now
+	if s.bucket < cost {
+		return false
+	}
+	s.bucket -= cost
+	return true
+}
+
+func (h *Hub) handle(s *session, m *inMsg) {
+	ctx := context.Background()
+	st := h.opts.Store
+
+	switch m.Type {
+	case "ping":
+		s.send("pong", map[string]any{"t": m.T})
+
+	case "history":
+		ch, err := st.Channel(ctx, m.ChannelID)
+		if err != nil || ch.Kind != "text" {
+			s.sendError("Канал не найден.")
+			return
+		}
+		msgs, more, err := st.History(ctx, m.ChannelID, m.Before, 50)
+		if err != nil {
+			log.Printf("history: %v", err)
+			s.sendError("Не удалось загрузить историю.")
+			return
+		}
+		s.send("history", map[string]any{"channelId": m.ChannelID, "before": m.Before, "messages": msgs, "hasMore": more})
+
+	case "send":
+		if !s.allow(1) {
+			s.sendError("Слишком часто, подождите немного.")
+			return
+		}
+		ch, err := st.Channel(ctx, m.ChannelID)
+		if err != nil || ch.Kind != "text" {
+			s.sendError("Канал не найден.")
+			return
+		}
+		text := clampText(m.Text)
+		atts := h.validAttachments(m.Attachments)
+		if strings.TrimSpace(text) == "" && len(atts) == 0 {
+			return
+		}
+		msg, err := st.CreateMessage(ctx, m.ChannelID, s.nickname, text, m.ReplyTo, atts)
+		if err != nil {
+			log.Printf("send: %v", err)
+			s.sendError("Не удалось отправить сообщение.")
+			return
+		}
+		h.broadcast("message", map[string]any{"message": msg, "nonce": m.Nonce, "from": s.id}, nil)
+
+	case "edit":
+		msg, err := st.EditMessage(ctx, m.ID, s.nickname, clampText(m.Text))
+		if err != nil {
+			s.sendError(storeErr(err, "Не удалось изменить сообщение."))
+			return
+		}
+		h.broadcast("message-update", map[string]any{"message": msg}, nil)
+
+	case "delete":
+		h.mu.Lock()
+		admin := s.admin
+		h.mu.Unlock()
+		msg, err := st.DeleteMessage(ctx, m.ID, s.nickname, admin)
+		if err != nil {
+			s.sendError(storeErr(err, "Не удалось удалить сообщение."))
+			return
+		}
+		h.broadcast("message-delete", map[string]any{"id": msg.ID, "channelId": msg.ChannelID}, nil)
+
+	case "react":
+		emoji := strings.TrimSpace(m.Emoji)
+		if emoji == "" || len(emoji) > 32 || !s.allow(0.5) {
+			return
+		}
+		msg, err := st.ToggleReaction(ctx, m.ID, emoji, s.nickname)
+		if err != nil {
+			s.sendError(storeErr(err, "Не удалось поставить реакцию."))
+			return
+		}
+		h.broadcast("message-update", map[string]any{"message": msg}, nil)
+
+	case "typing":
+		h.broadcast("typing", map[string]any{"channelId": m.ChannelID, "userId": s.id, "nickname": s.nickname}, s)
+
+	case "voice-join":
+		h.voiceJoin(s, m.ChannelID)
+
+	case "voice-leave":
+		h.mu.Lock()
+		peer := s.peer
+		h.mu.Unlock()
+		if peer != nil {
+			peer.Close() // onClosed обновит присутствие
+		}
+
+	case "voice-state":
+		h.mu.Lock()
+		if m.Muted != nil {
+			s.muted = *m.Muted
+		}
+		if m.Deafened != nil {
+			s.deafened = *m.Deafened
+		}
+		if m.Screen != nil {
+			s.screen = *m.Screen && s.voiceChannel != 0
+		}
+		if m.Camera != nil {
+			s.camera = *m.Camera && s.voiceChannel != 0
+		}
+		h.mu.Unlock()
+		h.broadcastPresence()
+
+	case "rtc-answer":
+		h.mu.Lock()
+		peer := s.peer
+		h.mu.Unlock()
+		if peer != nil {
+			if err := peer.HandleAnswer(m.SDP); err != nil {
+				log.Printf("RTC %s: answer: %v", s.nickname, err)
+			}
+		}
+
+	case "rtc-candidate":
+		h.mu.Lock()
+		peer := s.peer
+		h.mu.Unlock()
+		if peer != nil && m.Candidate != nil {
+			if err := peer.HandleCandidate(*m.Candidate); err != nil {
+				log.Printf("RTC %s: candidate: %v", s.nickname, err)
+			}
+		}
+
+	case "admin-login":
+		if h.opts.AdminPassword == "" || subtle.ConstantTimeCompare([]byte(m.Password), []byte(h.opts.AdminPassword)) != 1 {
+			time.Sleep(500 * time.Millisecond)
+			s.send("admin", map[string]any{"ok": false, "message": "Неверный пароль."})
+			return
+		}
+		h.mu.Lock()
+		s.admin = true
+		h.mu.Unlock()
+		s.send("admin", map[string]any{"ok": true, "token": h.adminToken(s.clientID)})
+		h.broadcastPresence()
+
+	case "admin-logout":
+		h.mu.Lock()
+		s.admin = false
+		h.mu.Unlock()
+		s.send("admin", map[string]any{"ok": false})
+		h.broadcastPresence()
+
+	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute":
+		h.mu.Lock()
+		admin := s.admin
+		h.mu.Unlock()
+		if !admin {
+			s.sendError("Нужны права администратора.")
+			return
+		}
+		h.handleAdmin(s, m)
+
+	default:
+		s.sendError("Неизвестная команда: " + m.Type)
+	}
+}
+
+func (h *Hub) voiceJoin(s *session, channelID int64) {
+	ch, err := h.opts.Store.Channel(context.Background(), channelID)
+	if err != nil || ch.Kind != "voice" {
+		s.sendError("Голосовой канал не найден.")
+		return
+	}
+	h.mu.Lock()
+	old := s.peer
+	s.peer = nil
+	h.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+
+	var peer *sfu.Peer
+	onClosed := func() {
+		h.mu.Lock()
+		changed := s.peer == peer && peer != nil
+		if changed {
+			s.peer = nil
+			s.voiceChannel = 0
+			s.screen = false
+			s.camera = false
+		}
+		h.mu.Unlock()
+		if changed {
+			s.send("voice-left", nil)
+			h.broadcastPresence()
+		}
+	}
+	// Сигнал «voice-joined» должен уйти раньше первого offer.
+	s.send("voice-joined", map[string]any{"channelId": channelID})
+	peer, err = h.opts.SFU.Join(strconv.FormatInt(channelID, 10), s.id, s.send, onClosed)
+	if err != nil {
+		log.Printf("RTC join: %v", err)
+		s.send("voice-left", map[string]any{"message": "Не удалось подключиться к голосу."})
+		return
+	}
+	h.mu.Lock()
+	peer.SetServerMuted(s.serverMuted)
+	s.peer = peer
+	s.voiceChannel = channelID
+	s.screen = false
+	s.camera = false
+	h.mu.Unlock()
+	h.broadcastPresence()
+}
+
+func (h *Hub) handleAdmin(s *session, m *inMsg) {
+	ctx := context.Background()
+	st := h.opts.Store
+	switch m.Type {
+	case "channel-create":
+		name := channelName(m.Name, m.Kind)
+		if name == "" || (m.Kind != "text" && m.Kind != "voice") {
+			s.sendError("Укажите тип и название канала.")
+			return
+		}
+		if _, err := st.CreateChannel(ctx, m.Kind, name); err != nil {
+			s.sendError("Не удалось создать канал.")
+			return
+		}
+	case "channel-rename":
+		ch, err := st.Channel(ctx, m.ID)
+		if err != nil {
+			s.sendError("Канал не найден.")
+			return
+		}
+		name := channelName(m.Name, ch.Kind)
+		if name == "" {
+			s.sendError("Пустое название.")
+			return
+		}
+		if err := st.RenameChannel(ctx, m.ID, name); err != nil {
+			s.sendError("Не удалось переименовать.")
+			return
+		}
+	case "channel-move":
+		if err := st.MoveChannel(ctx, m.ID, m.Dir); err != nil {
+			s.sendError("Не удалось переместить.")
+			return
+		}
+	case "channel-delete":
+		chs, _ := st.Channels(ctx)
+		var target store.Channel
+		same := 0
+		for _, c := range chs {
+			if c.ID == m.ID {
+				target = c
+			}
+		}
+		for _, c := range chs {
+			if c.Kind == target.Kind {
+				same++
+			}
+		}
+		if target.ID == 0 {
+			s.sendError("Канал не найден.")
+			return
+		}
+		if same <= 1 {
+			s.sendError("Нельзя удалить последний канал такого типа.")
+			return
+		}
+		if err := st.DeleteChannel(ctx, m.ID); err != nil {
+			s.sendError("Не удалось удалить.")
+			return
+		}
+		if target.Kind == "voice" {
+			for _, p := range h.peersInVoice(target.ID) {
+				p.Close()
+			}
+		}
+	case "kick":
+		h.mu.Lock()
+		target := h.sessions[m.SessionID]
+		h.mu.Unlock()
+		if target == nil {
+			s.sendError("Пользователь не в сети.")
+			return
+		}
+		target.send("kicked", map[string]any{"message": "Вас отключил администратор " + s.nickname + "."})
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			h.dropSession(target)
+			h.broadcastPresence()
+		}()
+		return
+	case "server-mute":
+		h.mu.Lock()
+		target := h.sessions[m.SessionID]
+		var peer *sfu.Peer
+		if target != nil {
+			target.serverMuted = m.Value
+			peer = target.peer
+			if m.Value {
+				h.mutedBy[strings.ToLower(target.nickname)] = true
+			} else {
+				delete(h.mutedBy, strings.ToLower(target.nickname))
+			}
+		}
+		h.mu.Unlock()
+		if target == nil {
+			s.sendError("Пользователь не в сети.")
+			return
+		}
+		if peer != nil {
+			peer.SetServerMuted(m.Value)
+		}
+		h.broadcastPresence()
+		return
+	case "disconnect-voice":
+		h.mu.Lock()
+		target := h.sessions[m.SessionID]
+		var peer *sfu.Peer
+		if target != nil {
+			peer = target.peer
+		}
+		h.mu.Unlock()
+		if peer != nil {
+			peer.Close()
+		}
+		return
+	}
+	h.broadcastChannels()
+}
+
+func (h *Hub) peersInVoice(channelID int64) []*sfu.Peer {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []*sfu.Peer
+	for _, s := range h.sessions {
+		if s.voiceChannel == channelID && s.peer != nil {
+			out = append(out, s.peer)
+		}
+	}
+	return out
+}
+
+// ---------- вспомогательное ----------
+
+func clampText(t string) string {
+	t = strings.TrimRightFunc(t, unicode.IsSpace)
+	t = strings.TrimLeft(t, "\r\n")
+	if r := []rune(t); len(r) > maxText {
+		t = string(r[:maxText])
+	}
+	return t
+}
+
+func channelName(name, kind string) string {
+	name = strings.Join(strings.Fields(name), " ")
+	if kind == "text" {
+		// как в Discord: текстовые каналы — строчными и через дефис
+		name = strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	}
+	if r := []rune(name); len(r) > 50 {
+		name = string(r[:50])
+	}
+	return name
+}
+
+var uploadURL = regexp.MustCompile(`^/uploads/[a-f0-9]{24}(\.[a-z0-9]{1,8})?$`)
+
+func (h *Hub) validAttachments(in []store.Attachment) []store.Attachment {
+	out := []store.Attachment{}
+	for _, a := range in {
+		if len(out) >= 10 {
+			break
+		}
+		if !uploadURL.MatchString(a.URL) {
+			continue
+		}
+		fi, err := os.Stat(filepath.Join(h.opts.UploadDir, filepath.Base(a.URL)))
+		if err != nil || fi.IsDir() {
+			continue
+		}
+		name := filepath.Base(strings.ReplaceAll(a.Name, "\\", "/"))
+		if r := []rune(name); len(r) > 120 {
+			name = string(r[:120])
+		}
+		if name == "" || name == "." {
+			name = filepath.Base(a.URL)
+		}
+		out = append(out, store.Attachment{
+			URL:    a.URL,
+			Name:   name,
+			Mime:   mimeForExt(filepath.Ext(a.URL)),
+			Size:   fi.Size(),
+			Width:  clampInt(a.Width, 0, 20000),
+			Height: clampInt(a.Height, 0, 20000),
+		})
+	}
+	return out
+}
+
+func clampInt(v, lo, hi int) int {
+	return max(lo, min(hi, v))
+}
+
+func storeErr(err error, def string) string {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return "Сообщение не найдено."
+	case errors.Is(err, store.ErrForbidden):
+		return "Это не ваше сообщение."
+	default:
+		return def
+	}
+}
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// SessionNick — ник по id сессии (для HTTP-загрузок).
+func (h *Hub) SessionNick(id string) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s := h.sessions[id]
+	if s == nil {
+		return "", false
+	}
+	return s.nickname, true
+}

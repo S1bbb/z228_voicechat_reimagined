@@ -1,0 +1,516 @@
+// Голос: одно RTCPeerConnection с сервером (SFU), микрофон, демонстрация экрана,
+// воспроизведение собеседников, громкость по людям и индикация речи.
+
+const SPEAK_THRESHOLD = 0.018;
+const SPEAK_HOLD_MS = 280;
+
+export class Voice {
+  /**
+   * @param {(type:string, payload:object)=>void} send — отправка в WebSocket
+   * @param {object} hooks — колбэки: onState, onSpeaking, onRemoteVideo, onScreenEnded, onError
+   */
+  constructor(send, hooks) {
+    this.send = send;
+    this.hooks = hooks;
+    this.pc = null;
+    this.channelId = 0;
+    this.micStream = null;
+    this.micTrack = null;
+    this.screenStream = null;
+    this.chain = Promise.resolve();
+    this.pendingIce = [];
+    this.remote = new Map(); // userId -> {audio:{track,el,src,gain,analyser}, video:{track}}
+    this.speaking = new Set();
+    this.ctx = null;
+    this.muted = false;
+    this.deafened = false;
+    this.serverMuted = false;
+    this.pttHeld = false;
+    this.settings = {};
+    this.volumes = {}; // userId/nick -> 0..200
+    this.localMutes = {};
+    this.meterTimer = null;
+    this.localAnalyser = null;
+    this.myId = "";
+  }
+
+  audioCtx() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AC();
+    }
+    if (this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
+    return this.ctx;
+  }
+
+  get active() {
+    return !!this.pc;
+  }
+
+  micConstraints() {
+    const s = this.settings;
+    const audio = {
+      echoCancellation: s.echoCancellation !== false,
+      noiseSuppression: s.noiseSuppression !== false,
+      autoGainControl: s.autoGainControl !== false,
+      channelCount: 1,
+    };
+    if (s.inputDevice) audio.deviceId = { exact: s.inputDevice };
+    return { audio, video: false };
+  }
+
+  async acquireMic() {
+    try {
+      return await navigator.mediaDevices.getUserMedia(this.micConstraints());
+    } catch (e) {
+      if (this.settings.inputDevice && e.name === "OverconstrainedError") {
+        // устройство пропало — берём по умолчанию
+        return await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+      throw e;
+    }
+  }
+
+  async join(channelId, myId) {
+    if (this.pc) this.leave(false);
+    this.myId = myId;
+    this.channelId = channelId;
+    this.hooks.onState("connecting");
+    this.audioCtx();
+
+    try {
+      if (!window.isSecureContext) throw Object.assign(new Error("insecure"), { name: "InsecureContext" });
+      this.micStream = await this.acquireMic();
+      this.micTrack = this.micStream.getAudioTracks()[0] || null;
+    } catch (e) {
+      this.micStream = null;
+      this.micTrack = null;
+      const why =
+        e.name === "InsecureContext"
+          ? "Микрофон доступен только по HTTPS (или на localhost). Вы подключены только на прослушивание."
+          : e.name === "NotAllowedError"
+            ? "Нет доступа к микрофону — разрешите его в настройках сайта. Вы подключены только на прослушивание."
+            : "Микрофон не найден. Вы подключены только на прослушивание.";
+      this.hooks.onError(why);
+    }
+    if (this.channelId !== channelId) return; // пока ждали разрешения, пользователь передумал
+
+    const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
+    this.pc = pc;
+    pc.onicecandidate = (e) => {
+      if (e.candidate && this.pc === pc) this.send("rtc-candidate", { candidate: e.candidate.toJSON() });
+    };
+    pc.ontrack = (e) => this.onTrack(e);
+    pc.onconnectionstatechange = () => {
+      if (this.pc !== pc) return;
+      const st = pc.connectionState;
+      if (st === "connected") this.hooks.onState("connected");
+      else if (st === "failed") {
+        this.hooks.onState("failed");
+        this.hooks.onError("Не удалось установить голосовое соединение с сервером. Проверьте, что UDP/TCP-порт голоса открыт.");
+      } else if (st === "disconnected") this.hooks.onState("connecting");
+    };
+    this.applyMicGate();
+    this.startMeters();
+    this.send("voice-join", { channelId });
+  }
+
+  leave(notify = true) {
+    if (notify && this.pc) this.send("voice-leave", {});
+    if (this.pc) {
+      try {
+        this.pc.close();
+      } catch {}
+    }
+    this.pc = null;
+    this.channelId = 0;
+    this.pendingIce = [];
+    this.chain = Promise.resolve();
+    this.stopScreen(false);
+    if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
+    this.micStream = null;
+    this.micTrack = null;
+    for (const id of [...this.remote.keys()]) this.dropRemote(id);
+    this.stopMeters();
+    this.speaking.clear();
+    this.hooks.onSpeaking(this.speaking);
+    this.hooks.onState("disconnected");
+  }
+
+  // ---------- сигналинг ----------
+
+  onOffer(sdp) {
+    const pc = this.pc;
+    if (!pc) return;
+    this.chain = this.chain
+      .then(async () => {
+        if (this.pc !== pc) return;
+        await pc.setRemoteDescription({ type: "offer", sdp });
+        // m-line 0/1 — наши исходящие audio/video
+        for (const t of pc.getTransceivers()) {
+          if (t.mid === "0" || t.mid === "1") {
+            if (t.direction !== "sendrecv") t.direction = "sendrecv";
+            const want = t.mid === "0" ? this.micTrack : this.screenTrack();
+            if (t.sender.track !== want) await t.sender.replaceTrack(want);
+            if (t.mid === "1") this.tuneVideoSender(t.sender);
+          }
+        }
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        this.send("rtc-answer", { sdp: pc.localDescription.sdp });
+        const queued = this.pendingIce;
+        this.pendingIce = [];
+        for (const c of queued) await pc.addIceCandidate(c).catch(() => {});
+      })
+      .catch((e) => console.error("rtc offer", e));
+  }
+
+  onCandidate(c) {
+    const pc = this.pc;
+    if (!pc || !c) return;
+    if (!pc.remoteDescription) {
+      this.pendingIce.push(c);
+      return;
+    }
+    pc.addIceCandidate(c).catch((e) => console.warn("ICE", e));
+  }
+
+  sendTransceiver(mid) {
+    if (!this.pc) return null;
+    return this.pc.getTransceivers().find((t) => t.mid === mid) || null;
+  }
+
+  // ---------- входящие треки ----------
+
+  onTrack(e) {
+    const stream = e.streams[0];
+    const userId = stream ? stream.id : "";
+    if (!userId || userId === this.myId) return;
+    const track = e.track;
+    const r = this.remote.get(userId) || {};
+    this.remote.set(userId, r);
+    if (track.kind === "audio") {
+      this.teardownAudio(r);
+      r.audio = this.buildAudio(userId, track);
+    } else {
+      r.video = { track, stream: new MediaStream([track]) };
+      this.hooks.onRemoteVideo(userId, r.video.stream);
+    }
+    track.addEventListener("ended", () => {
+      const cur = this.remote.get(userId);
+      if (!cur) return;
+      if (track.kind === "audio" && cur.audio && cur.audio.track === track) this.teardownAudio(cur);
+      if (track.kind === "video" && cur.video && cur.video.track === track) {
+        cur.video = null;
+        this.hooks.onRemoteVideo(userId, null);
+      }
+    });
+  }
+
+  buildAudio(userId, track) {
+    const ctx = this.audioCtx();
+    const stream = new MediaStream([track]);
+    const el = new Audio();
+    el.autoplay = true;
+    el.srcObject = stream;
+    if (this.settings.outputDevice && el.setSinkId) el.setSinkId(this.settings.outputDevice).catch(() => {});
+    el.play().catch(() => {});
+    const src = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    src.connect(analyser);
+    const gain = ctx.createGain();
+    src.connect(gain);
+    const a = { track, el, src, analyser, gain, routed: false, userId };
+    this.applyVolume(userId, a);
+    return a;
+  }
+
+  teardownAudio(r) {
+    const a = r.audio;
+    if (!a) return;
+    try {
+      a.el.pause();
+      a.el.srcObject = null;
+      a.src.disconnect();
+      a.gain.disconnect();
+    } catch {}
+    r.audio = null;
+  }
+
+  dropRemote(userId) {
+    const r = this.remote.get(userId);
+    if (!r) return;
+    this.teardownAudio(r);
+    if (r.video) this.hooks.onRemoteVideo(userId, null);
+    this.remote.delete(userId);
+    this.speaking.delete(userId);
+  }
+
+  /** Убрать данные тех, кого уже нет в канале (по presence). */
+  syncMembers(userIds) {
+    const keep = new Set(userIds);
+    for (const id of [...this.remote.keys()]) if (!keep.has(id)) this.dropRemote(id);
+  }
+
+  remoteVideo(userId) {
+    const r = this.remote.get(userId);
+    return r && r.video ? r.video.stream : null;
+  }
+
+  // ---------- громкость ----------
+
+  setVolume(key, userId, percent) {
+    this.volumes[key] = percent;
+    const r = this.remote.get(userId);
+    if (r && r.audio) this.applyVolume(userId, r.audio);
+  }
+
+  setLocalMute(key, userId, muted) {
+    this.localMutes[key] = muted;
+    const r = this.remote.get(userId);
+    if (r && r.audio) this.applyVolume(userId, r.audio);
+  }
+
+  applyAllVolumes() {
+    for (const [id, r] of this.remote) if (r.audio) this.applyVolume(id, r.audio);
+  }
+
+  applyVolume(userId, a) {
+    const key = this.hooks.volumeKey(userId);
+    const pct = this.volumes[key] ?? 100;
+    const silent = this.deafened || this.localMutes[key];
+    const master = (this.settings.outputVolume ?? 100) / 100;
+    const v = silent ? 0 : (pct / 100) * master;
+    if (v <= 1) {
+      // обычный путь — через <audio>, так работает эхоподавление Chrome
+      if (a.routed) {
+        a.gain.disconnect();
+        a.routed = false;
+      }
+      a.el.muted = false;
+      a.el.volume = v;
+    } else {
+      // громче 100% — только через WebAudio
+      a.el.muted = true;
+      a.gain.gain.value = v;
+      if (!a.routed) {
+        a.gain.connect(this.audioCtx().destination);
+        a.routed = true;
+      }
+    }
+  }
+
+  async setOutputDevice(id) {
+    this.settings.outputDevice = id;
+    for (const r of this.remote.values()) {
+      if (r.audio && r.audio.el.setSinkId) await r.audio.el.setSinkId(id || "").catch(() => {});
+    }
+    if (this.ctx && this.ctx.setSinkId) await this.ctx.setSinkId(id || "").catch(() => {});
+  }
+
+  // ---------- микрофон ----------
+
+  setMuted(m) {
+    this.muted = m;
+    this.applyMicGate();
+  }
+
+  setDeafened(d) {
+    this.deafened = d;
+    this.applyAllVolumes();
+    this.applyMicGate();
+  }
+
+  setPttHeld(held) {
+    this.pttHeld = held;
+    this.applyMicGate();
+  }
+
+  micOpen() {
+    if (!this.micTrack || this.muted || this.deafened || this.serverMuted) return false;
+    if (this.settings.pushToTalk) return this.pttHeld;
+    return true;
+  }
+
+  applyMicGate() {
+    if (this.micTrack) this.micTrack.enabled = this.micOpen();
+  }
+
+  /** Перезапустить микрофон с новыми настройками (устройство, шумодав). */
+  async restartMic() {
+    if (!this.pc) return;
+    try {
+      const stream = await this.acquireMic();
+      const track = stream.getAudioTracks()[0];
+      if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
+      this.micStream = stream;
+      this.micTrack = track;
+      this.applyMicGate();
+      const t = this.sendTransceiver("0");
+      if (t) await t.sender.replaceTrack(track);
+      this.localAnalyser = null;
+    } catch (e) {
+      this.hooks.onError("Не удалось переключить микрофон: " + e.message);
+    }
+  }
+
+  // ---------- демонстрация экрана ----------
+
+  screenTrack() {
+    return this.screenStream ? this.screenStream.getVideoTracks()[0] || null : null;
+  }
+
+  async startScreen(quality = "1080p30") {
+    if (!this.pc) return false;
+    const [res, fps] = { "720p30": [720, 30], "1080p30": [1080, 30], "1080p60": [1080, 60], "1440p30": [1440, 30] }[quality] || [1080, 30];
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { height: { ideal: res }, frameRate: { ideal: fps, max: fps } },
+        audio: false,
+      });
+    } catch (e) {
+      if (e.name !== "NotAllowedError") this.hooks.onError("Не удалось начать демонстрацию: " + e.message);
+      return false;
+    }
+    this.stopScreen(false);
+    this.screenStream = stream;
+    this.screenQuality = { res, fps };
+    const track = stream.getVideoTracks()[0];
+    track.contentHint = fps >= 60 ? "motion" : "detail";
+    track.addEventListener("ended", () => {
+      if (this.screenStream === stream) {
+        this.stopScreen(true);
+        this.hooks.onScreenEnded();
+      }
+    });
+    const t = this.sendTransceiver("1");
+    if (t) {
+      await t.sender.replaceTrack(track);
+      this.tuneVideoSender(t.sender);
+    }
+    return true;
+  }
+
+  tuneVideoSender(sender) {
+    if (!this.screenStream) return;
+    const params = sender.getParameters();
+    if (!params.encodings || !params.encodings.length) return;
+    const { res = 1080, fps = 30 } = this.screenQuality || {};
+    params.encodings[0].maxBitrate = Math.round((res >= 1440 ? 6 : res >= 1080 ? 3.5 : 2) * (fps >= 60 ? 1.6 : 1) * 1e6);
+    params.encodings[0].maxFramerate = fps;
+    params.degradationPreference = fps >= 60 ? "maintain-framerate" : "maintain-resolution";
+    sender.setParameters(params).catch(() => {});
+  }
+
+  stopScreen(replace = true) {
+    if (this.screenStream) this.screenStream.getTracks().forEach((t) => t.stop());
+    this.screenStream = null;
+    if (replace) {
+      const t = this.sendTransceiver("1");
+      if (t) t.sender.replaceTrack(null).catch(() => {});
+    }
+  }
+
+  // ---------- индикация речи ----------
+
+  startMeters() {
+    this.stopMeters();
+    const buf = new Float32Array(512);
+    const last = new Map();
+    const rms = (an) => {
+      an.getFloatTimeDomainData(buf);
+      let s = 0;
+      for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
+      return Math.sqrt(s / buf.length);
+    };
+    this.meterTimer = setInterval(() => {
+      const now = performance.now();
+      let changed = false;
+      const check = (id, level) => {
+        if (level > SPEAK_THRESHOLD) last.set(id, now);
+        const on = now - (last.get(id) || 0) < SPEAK_HOLD_MS;
+        if (on !== this.speaking.has(id)) {
+          on ? this.speaking.add(id) : this.speaking.delete(id);
+          changed = true;
+        }
+      };
+      for (const [id, r] of this.remote) {
+        const silent = !r.audio || this.deafened;
+        check(id, silent ? 0 : rms(r.audio.analyser));
+      }
+      if (this.micTrack && !this.localAnalyser) {
+        const ctx = this.audioCtx();
+        this.localAnalyser = ctx.createAnalyser();
+        this.localAnalyser.fftSize = 512;
+        ctx.createMediaStreamSource(this.micStream).connect(this.localAnalyser);
+      }
+      if (this.myId) check(this.myId, this.localAnalyser && this.micOpen() ? rms(this.localAnalyser) : 0);
+      if (changed) this.hooks.onSpeaking(this.speaking);
+    }, 60);
+  }
+
+  stopMeters() {
+    clearInterval(this.meterTimer);
+    this.meterTimer = null;
+    this.localAnalyser = null;
+  }
+}
+
+/** Индикатор уровня микрофона для проверки в настройках. */
+export async function micTest(constraints, onLevel) {
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC();
+  const an = ctx.createAnalyser();
+  an.fftSize = 512;
+  ctx.createMediaStreamSource(stream).connect(an);
+  const buf = new Float32Array(512);
+  const timer = setInterval(() => {
+    an.getFloatTimeDomainData(buf);
+    let s = 0;
+    for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
+    onLevel(Math.min(1, Math.sqrt(s / buf.length) * 6));
+  }, 50);
+  return () => {
+    clearInterval(timer);
+    stream.getTracks().forEach((t) => t.stop());
+    ctx.close();
+  };
+}
+
+// ---------- звуки интерфейса ----------
+
+let sfxCtx = null;
+export function sfx(kind) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    sfxCtx = sfxCtx || new AC();
+    const ctx = sfxCtx;
+    if (ctx.state === "suspended") ctx.resume();
+    const seq = {
+      join: [[523, 0], [784, 0.09]],
+      leave: [[784, 0], [523, 0.09]],
+      mute: [[440, 0], [330, 0.06]],
+      unmute: [[330, 0], [440, 0.06]],
+      message: [[880, 0], [1175, 0.07]],
+      deafen: [[392, 0], [262, 0.07]],
+      undeafen: [[262, 0], [392, 0.07]],
+    }[kind];
+    if (!seq) return;
+    const t0 = ctx.currentTime;
+    for (const [freq, at] of seq) {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0, t0 + at);
+      g.gain.linearRampToValueAtTime(0.12, t0 + at + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.16);
+      o.connect(g).connect(ctx.destination);
+      o.start(t0 + at);
+      o.stop(t0 + at + 0.18);
+    }
+  } catch {}
+}

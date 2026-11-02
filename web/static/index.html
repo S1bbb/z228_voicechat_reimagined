@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <title>z228</title>
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <link rel="stylesheet" href="/style.css" />
+    <script>
+      try {
+        const t = JSON.parse(localStorage.getItem("z228.settings") || "{}").theme;
+        if (t === "light") document.documentElement.dataset.theme = "light";
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <!-- Вход -->
+    <div id="login" class="login" hidden>
+      <form id="loginForm" class="login-card" autocomplete="off">
+        <img src="/logo.png" class="login-logo" width="80" height="80" alt="" />
+        <h1 id="loginTitle">С возвращением!</h1>
+        <p class="muted" id="loginSubtitle">Как тебя называть?</p>
+        <label class="field">
+          <span>Ник</span>
+          <input id="loginNick" maxlength="32" required autofocus />
+        </label>
+        <label class="field" id="loginPasswordField" hidden>
+          <span>Пароль сервера</span>
+          <input id="loginPassword" type="password" />
+        </label>
+        <p id="loginError" class="form-error" hidden></p>
+        <button class="btn btn-primary btn-block" id="loginBtn" type="submit">Войти</button>
+        <p class="muted small" id="loginHint"></p>
+      </form>
+    </div>
+
+    <!-- Приложение -->
+    <div id="app" class="app" hidden>
+      <nav class="rail">
+        <button class="rail-server active" id="railServer" title="">
+          <img src="/logo.png" alt="" />
+        </button>
+        <div class="rail-sep"></div>
+      </nav>
+
+      <aside class="sidebar" id="sidebar">
+        <header class="server-header" id="serverHeader" tabindex="0">
+          <span id="serverName">z228</span>
+          <span class="server-header-chev" data-icon="chevron"></span>
+        </header>
+        <div class="server-menu" id="serverMenu" hidden></div>
+        <div class="channels" id="channels"></div>
+
+        <div class="voice-panel" id="voicePanel" hidden>
+          <div class="voice-panel-info">
+            <div class="voice-status" id="voiceStatus"><span data-icon="signal"></span><span id="voiceStatusText">Подключение…</span></div>
+            <button class="voice-channel-link" id="voiceChannelLink"></button>
+          </div>
+          <div class="voice-panel-actions">
+            <button class="icon-btn" id="vpScreen" title="Демонстрация экрана" data-icon="screen"></button>
+            <button class="icon-btn danger" id="vpLeave" title="Отключиться" data-icon="hangup"></button>
+          </div>
+        </div>
+
+        <div class="user-panel">
+          <button class="user-panel-me" id="meBtn" title="Профиль">
+            <span id="meAvatar"></span>
+            <span class="user-panel-names">
+              <span id="meName" class="user-panel-name"></span>
+              <span id="meStatus" class="user-panel-status">В сети</span>
+            </span>
+          </button>
+          <button class="icon-btn" id="micBtn" title="Микрофон"></button>
+          <button class="icon-btn" id="deafBtn" title="Звук"></button>
+          <button class="icon-btn" id="settingsBtn" title="Настройки" data-icon="gear"></button>
+        </div>
+      </aside>
+
+      <main class="main" id="main">
+        <header class="main-header">
+          <button class="icon-btn only-mobile" id="mobileMenuBtn" data-icon="menu" title="Каналы"></button>
+          <span class="main-header-icon" id="headerIcon"></span>
+          <h2 id="headerTitle"></h2>
+          <span class="main-header-topic" id="headerTopic"></span>
+          <div class="spacer"></div>
+          <button class="icon-btn" id="membersToggle" title="Участники" data-icon="users"></button>
+        </header>
+
+        <div class="main-body">
+          <section class="chat" id="chatView">
+            <div class="messages" id="messages">
+              <div class="messages-inner" id="messagesInner"></div>
+            </div>
+            <div class="composer-wrap">
+              <div class="composer-reply" id="replyBar" hidden></div>
+              <div class="composer-files" id="pendingFiles" hidden></div>
+              <div class="composer" id="composer">
+                <button class="icon-btn composer-attach" id="attachBtn" title="Прикрепить файл" data-icon="plusCircle"></button>
+                <textarea id="composerInput" rows="1" placeholder="Написать…" maxlength="4000"></textarea>
+                <button class="icon-btn" id="emojiBtn" title="Эмодзи" data-icon="smile"></button>
+              </div>
+              <div class="typing" id="typing"></div>
+              <input type="file" id="fileInput" multiple hidden />
+            </div>
+            <div class="drop-overlay" id="dropOverlay" hidden><div>Перетащите файлы, чтобы отправить</div></div>
+          </section>
+
+          <section class="stage" id="stageView" hidden>
+            <div class="stage-grid" id="stageGrid"></div>
+            <div class="stage-controls" id="stageControls">
+              <button class="round-btn" id="stMic" title="Микрофон"></button>
+              <button class="round-btn" id="stDeaf" title="Звук"></button>
+              <button class="round-btn" id="stScreen" title="Демонстрация экрана" data-icon="screen"></button>
+              <button class="round-btn danger" id="stLeave" title="Отключиться" data-icon="hangup"></button>
+            </div>
+            <div class="stage-join" id="stageJoin" hidden>
+              <h3 id="stageJoinTitle"></h3>
+              <p class="muted" id="stageJoinSub"></p>
+              <button class="btn btn-success" id="stageJoinBtn">Присоединиться к голосовому каналу</button>
+            </div>
+          </section>
+
+          <aside class="members" id="members"></aside>
+        </div>
+      </main>
+    </div>
+
+    <div class="banner" id="connBanner" hidden></div>
+    <div class="toasts" id="toasts"></div>
+    <div class="layer" id="layer"></div>
+    <div id="lightbox" class="lightbox" hidden></div>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>

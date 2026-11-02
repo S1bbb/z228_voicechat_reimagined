@@ -1,137 +1,105 @@
+// Package cert — самоподписанный сертификат для HTTPS (микрофон в браузере требует HTTPS не на localhost).
+// Сертификат хранится в каталоге данных, чтобы браузер не просил подтверждать его после каждого перезапуска.
 package cert
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"errors"
 	"math/big"
 	"net"
 	"os"
-	"strings"
+	"path/filepath"
 	"time"
 )
 
-type Credentials struct {
-	CertPEM []byte
-	KeyPEM  []byte
-}
+// LoadOrCreate возвращает сертификат из dir; пересоздаёт, если его нет, он истекает
+// или в нём не хватает каких-то из ips.
+func LoadOrCreate(dir string, ips []net.IP) (tls.Certificate, error) {
+	certPath := filepath.Join(dir, "selfsigned.crt")
+	keyPath := filepath.Join(dir, "selfsigned.key")
+	ips = append([]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, ips...)
 
-func SelfSigned(commonName string, extraIPsCSV string) (Credentials, error) {
-	ips, err := localIPv4s()
-	if err != nil {
-		return Credentials{}, err
-	}
-	for _, s := range splitCSV(extraIPsCSV) {
-		if ip := net.ParseIP(s); ip != nil {
-			ips = appendIfMissingIP(ips, ip)
+	if c, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil && len(c.Certificate) > 0 {
+		if leaf, err := x509.ParseCertificate(c.Certificate[0]); err == nil &&
+			time.Until(leaf.NotAfter) > 30*24*time.Hour && coversAll(leaf, ips) {
+			return c, nil
 		}
 	}
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return Credentials{}, err
+		return tls.Certificate{}, err
 	}
-
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return Credentials{}, err
+		return tls.Certificate{}, err
 	}
-
 	now := time.Now()
 	tpl := x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			CommonName: commonName,
-		},
-		NotBefore:             now.Add(-5 * time.Minute),
-		NotAfter:              now.Add(365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "z228 voice chat"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(397 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 		DNSNames:              []string{"localhost"},
-		IPAddresses:           ips,
+		IPAddresses:           dedupe(ips),
 	}
-
 	der, err := x509.CreateCertificate(rand.Reader, &tpl, &tpl, &key.PublicKey, key)
 	if err != nil {
-		return Credentials{}, err
+		return tls.Certificate{}, err
 	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	if certPEM == nil {
-		return Credentials{}, errors.New("failed to PEM-encode certificate")
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	if keyPEM == nil {
-		return Credentials{}, errors.New("failed to PEM-encode key")
-	}
-
-	return Credentials{CertPEM: certPEM, KeyPEM: keyPEM}, nil
-}
-
-func localIPv4s() ([]net.IP, error) {
-	var out []net.IP
-	out = append(out, net.ParseIP("127.0.0.1"))
-
-	ifaces, err := net.Interfaces()
+	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return nil, err
+		return tls.Certificate{}, err
 	}
-	for _, iface := range ifaces {
-		if (iface.Flags & net.FlagUp) == 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			var ip net.IP
-			switch v := a.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-			if ip == nil {
-				continue
-			}
-			ip4 := ip.To4()
-			if ip4 == nil {
-				continue
-			}
-			if ip4.IsLoopback() {
-				continue
-			}
-			out = appendIfMissingIP(out, ip4)
-		}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := os.MkdirAll(dir, 0o755); err == nil {
+		_ = os.WriteFile(certPath, certPEM, 0o644)
+		_ = os.WriteFile(keyPath, keyPEM, 0o600)
 	}
-	return out, nil
+	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
-func appendIfMissingIP(xs []net.IP, ip net.IP) []net.IP {
-	for _, x := range xs {
-		if x.Equal(ip) {
-			return xs
+func coversAll(leaf *x509.Certificate, ips []net.IP) bool {
+	for _, ip := range ips {
+		found := false
+		for _, have := range leaf.IPAddresses {
+			if have.Equal(ip) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
 		}
 	}
-	return append(xs, ip)
+	return true
 }
 
-func splitCSV(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		p := strings.TrimSpace(part)
-		if p != "" {
-			out = append(out, p)
+func dedupe(ips []net.IP) []net.IP {
+	var out []net.IP
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		dup := false
+		for _, o := range out {
+			if o.Equal(ip) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, ip)
 		}
 	}
 	return out
 }
-
-// Ensure imported packages not optimized away on old toolchains.
-var _ = os.ErrNotExist
-

@@ -1,32 +1,25 @@
+# Самый простой вариант для Linux-сервера — host-сеть: голос видит настоящие IP машины.
+# На Docker Desktop (Windows/macOS) host-сеть не работает — закомментируйте network_mode,
+# раскомментируйте ports и укажите RTC_PUBLIC_IP (внешний IP и/или LAN-IP ПК через запятую).
 services:
-  mongo:
-    image: mongo:7
-    volumes:
-      - mongo_data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    restart: unless-stopped
-
-  zalupa228local:
+  z228:
     build: .
-    # Актуальный код сервера с хоста (правки чата без docker build). Уберите том в проде, если нужен только образ.
-    volumes:
-      - ./server:/app/server
-    ports:
-      - "3000:3000"
-      - "3443:3443"
-    environment:
-      MONGODB_URI: mongodb://mongo:27017/zalupa228local
-      CERT_EXTRA_IPS: ${CERT_EXTRA_IPS:-}
-      ADMIN_PANEL_PASSWORD: ${ADMIN_PANEL_PASSWORD:-admin123}
-    depends_on:
-      mongo:
-        condition: service_healthy
+    image: z228:latest
     restart: unless-stopped
-
-volumes:
-  mongo_data:
+    network_mode: host
+    # ports:
+    #   - "3000:3000"
+    #   - "3443:3443"
+    #   - "50000:50000/udp"
+    #   - "50000:50000/tcp"
+    volumes:
+      - ./data:/data
+    environment:
+      SERVER_NAME: ${SERVER_NAME:-z228}
+      SERVER_PASSWORD: ${SERVER_PASSWORD:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      RTC_PUBLIC_IP: ${RTC_PUBLIC_IP:-}
+      # Свой домен + бесплатный сертификат (нужны открытые 80 и 443):
+      TLS_DOMAIN: ${TLS_DOMAIN:-}
+      # PORT: "80"
+      # HTTPS_PORT: "443"

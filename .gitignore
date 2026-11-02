@@ -1,9 +1,7 @@
-node_modules/
-npm-debug.log*
-.DS_Store
-Thumbs.db
+/bin/
+/data/
 .env
 .env.*
 *.log
-.go/
-bin/
+.DS_Store
+Thumbs.db
