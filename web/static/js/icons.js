@@ -15,6 +15,8 @@ const P = {
     '<path d="M21.6 15.5c.3.3.4.8.2 1.2l-1.1 2.1c-.2.4-.7.6-1.2.5-2-.6-3.8-1.6-5.4-2.9l1-2.5c.1-.4 0-.8-.3-1.1a12 12 0 0 0-5.6 0c-.3.3-.4.7-.3 1.1l1 2.5c-1.6 1.3-3.4 2.3-5.4 2.9-.5.1-1-.1-1.2-.5l-1.1-2.1c-.2-.4-.1-.9.2-1.2 5.3-5.3 13.9-5.3 19.2 0z" fill="currentColor" transform="rotate(0 12 12) translate(0 -3)"/>',
   screen:
     '<rect x="2" y="4" width="20" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 21h8M12 17v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 7.5l3 3h-2v3h-2v-3H9z" fill="currentColor"/>',
+  camera:
+    '<rect x="2" y="6" width="14" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 10.5 22 7v10l-6-3.5z" fill="currentColor"/>',
   plus: '<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
   plusCircle:
     '<circle cx="12" cy="12" r="10" fill="currentColor"/><path d="M12 7v10M7 12h10" stroke="var(--bg-secondary)" stroke-width="2.2" stroke-linecap="round"/>',

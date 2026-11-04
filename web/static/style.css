@@ -2302,3 +2302,12 @@ body.resizing video {
   border-radius: 8px;
   background: var(--bg-secondary);
 }
+
+/* ---------- камера ---------- */
+
+.tile.has-video video {
+  object-fit: cover;
+}
+.round-btn.active {
+  color: #fff;
+}

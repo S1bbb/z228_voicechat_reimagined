@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS = {
   pushToTalk: false,
   pttKey: "",
   screenQuality: "1080p30",
+  videoDevice: "",
   sounds: true,
   notifications: false,
 };
@@ -79,6 +80,11 @@ const voice = new Voice((type, payload) => send(type, payload), {
     for (const el of $$("[data-speak]")) el.classList.toggle("speaking", set.has(el.dataset.speak));
   },
   onRemoteVideo: () => renderStage(),
+  onCameraEnded: () => {
+    send("voice-state", { camera: false });
+    renderVoicePanel();
+    renderStage();
+  },
   onScreenEnded: () => {
     send("voice-state", { screen: false });
     renderVoicePanel();
@@ -585,6 +591,22 @@ function toggleDeafen() {
   renderStage();
 }
 
+async function toggleCamera() {
+  if (!voice.active) {
+    toast("Сначала подключитесь к голосовому каналу.");
+    return;
+  }
+  if (voice.cameraStream) {
+    voice.stopCamera(true);
+    send("voice-state", { camera: false });
+  } else {
+    const ok = await voice.startCamera();
+    if (ok) send("voice-state", { camera: true });
+  }
+  renderVoicePanel();
+  renderStage();
+}
+
 async function toggleScreen() {
   if (!voice.active) {
     toast("Сначала подключитесь к голосовому каналу.");
@@ -669,6 +691,7 @@ function renderChannels() {
               "span.flags",
               null,
               u.screen ? h("span.live-badge", null, "В ЭФИРЕ") : null,
+              u.camera ? h("span", { html: icon("camera", 16), title: "Камера включена" }) : null,
               u.serverMuted ? h("span", { html: icon("micOff", 16), title: "Заглушён администратором", style: { color: "var(--danger)" } }) : null,
               u.deafened ? h("span", { html: icon("headphonesOff", 16), title: "Звук выключен" }) : u.muted && !u.serverMuted ? h("span", { html: icon("micOff", 16), title: "Микрофон выключен" }) : null,
               S.localMutes[u.nickname.toLowerCase()] ? h("span", { html: icon("speaker", 16), title: "Заглушён вами", style: { opacity: 0.5 } }) : null,
@@ -746,6 +769,8 @@ function renderVoicePanel() {
   const rtt = S.myStats && S.myStats.rtt != null ? S.myStats.rtt : S.ping;
   $("#voiceChannelLink").textContent = (ch ? ch.name : "") + " / " + S.server.name + (rtt && S.voiceState === "connected" ? ` · ${rtt} мс` : "");
   $("#vpScreen").classList.toggle("active", !!voice.screenStream);
+  $("#vpCamera").classList.toggle("active", !!voice.cameraStream);
+  $("#stCamera").classList.toggle("active", !!voice.cameraStream);
   $("#stScreen").classList.toggle("active", !!voice.screenStream);
 }
 
@@ -1502,8 +1527,10 @@ function renderStage() {
     const tile = h("div.tile" + (S.focusTile === key ? ".focused" : ""), { dataset: { key, speak: u.id }, onclick: (e) => userMenu(e, u) });
     if (S.speaking.has(u.id)) tile.classList.add("speaking");
     tile.style.background = `color-mix(in srgb, ${avatarColor(u.nickname)} 35%, #1e1f22)`;
+    const cam = u.camera ? (isMe ? voice.cameraStream : voice.remoteCamera(u.id)) : null;
+    if (cam) tile.classList.add("has-video");
     tile.append(
-      avatar(u.nickname, 80),
+      cam ? videoFor("camera:" + u.id, cam, isMe) : avatar(u.nickname, 80),
       h(
         "div.tile-label",
         null,
@@ -1974,7 +2001,11 @@ async function settingsVoice(c) {
   c.append(h("h2", null, "Голос и видео"));
   const inSel = h("div");
   const outSel = h("div");
-  c.append(h("div.grid2", null, h("label.field", null, h("span", null, "Устройство ввода"), inSel), h("label.field", null, h("span", null, "Устройство вывода"), outSel)));
+  const camSel = h("div");
+  c.append(
+    h("div.grid2", null, h("label.field", null, h("span", null, "Устройство ввода"), inSel), h("label.field", null, h("span", null, "Устройство вывода"), outSel)),
+    h("label.field", { style: { maxWidth: "calc(50% - 8px)" } }, h("span", null, "Камера"), camSel)
+  );
 
   const fillDevices = async () => {
     let devs = [];
@@ -2002,6 +2033,16 @@ async function settingsVoice(c) {
       outSelect.title = "Браузер не поддерживает выбор устройства вывода";
     }
     outSel.append(outSelect);
+    const cams = [["", "По умолчанию"], ...devs.filter((d) => d.kind === "videoinput" && d.deviceId).map((d, i) => [d.deviceId, d.label || `Камера ${i + 1}`])];
+    camSel.innerHTML = "";
+    camSel.append(
+      select(cams, s.videoDevice || "", async (v) => {
+        s.videoDevice = v;
+        saveSettings();
+        // включённую камеру сразу переключаем на новую
+        if (voice.cameraStream && (await voice.startCamera())) renderStage();
+      })
+    );
   };
   fillDevices();
 
@@ -2680,6 +2721,8 @@ function bindUi() {
   $("#vpLeave").onclick = leaveVoice;
   $("#stLeave").onclick = leaveVoice;
   $("#vpScreen").onclick = toggleScreen;
+  $("#vpCamera").onclick = toggleCamera;
+  $("#stCamera").onclick = toggleCamera;
   $("#stScreen").onclick = toggleScreen;
   $("#voiceChannelLink").onclick = () => voice.channelId && openStage(voice.channelId);
   $("#meBtn").onclick = (e) => userMenu(e, userById(S.me.id) || { id: S.me.id, nickname: S.me.nickname });

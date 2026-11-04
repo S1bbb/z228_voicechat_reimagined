@@ -6,7 +6,8 @@
 // поэтому клиентам не нужен P2P, TURN или Radmin — достаточно, чтобы был доступен сервер.
 //
 // Переговоры всегда начинает сервер: он шлёт offer, клиент отвечает answer.
-// Первые два m-line (audio, video) — входящие от клиента; остальные — пересылаемые треки других.
+// Первые три m-line — входящие от клиента: 0 — микрофон, 1 — демонстрация экрана, 2 — камера;
+// остальные — пересылаемые треки других участников.
 package sfu
 
 import (
@@ -118,7 +119,7 @@ func (s *SFU) Join(roomID, peerID string, signal Signal, onClosed func()) (*Peer
 	if err != nil {
 		return nil, err
 	}
-	for _, kind := range []webrtc.RTPCodecType{webrtc.RTPCodecTypeAudio, webrtc.RTPCodecTypeVideo} {
+	for _, kind := range []webrtc.RTPCodecType{webrtc.RTPCodecTypeAudio, webrtc.RTPCodecTypeVideo, webrtc.RTPCodecTypeVideo} {
 		if _, err := pc.AddTransceiverFromKind(kind, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly}); err != nil {
 			_ = pc.Close()
 			return nil, err
@@ -148,8 +149,8 @@ func (s *SFU) Join(roomID, peerID string, signal Signal, onClosed func()) (*Peer
 		}
 	})
 
-	pc.OnTrack(func(remote *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		p.publish(remote)
+	pc.OnTrack(func(remote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		p.publish(remote, trackLabel(pc, receiver, remote))
 	})
 
 	// Порядок блокировок: s.mu -> r.mu (как в Close), чтобы пустую комнату не удалили у нас из-под рук.
@@ -202,15 +203,36 @@ func (s *SFU) extraCandidates(c *webrtc.ICECandidate, base webrtc.ICECandidateIn
 	return out
 }
 
+// trackLabel — что это за входящий поток, по m-line: "audio", "screen" или "camera".
+func trackLabel(pc *webrtc.PeerConnection, receiver *webrtc.RTPReceiver, remote *webrtc.TrackRemote) string {
+	for _, t := range pc.GetTransceivers() {
+		if t.Receiver() == receiver {
+			switch t.Mid() {
+			case "0":
+				return "audio"
+			case "1":
+				return "screen"
+			case "2":
+				return "camera"
+			}
+		}
+	}
+	if remote.Kind() == webrtc.RTPCodecTypeAudio {
+		return "audio"
+	}
+	return "screen"
+}
+
 // publish — пришёл трек от участника: создаём локальную копию и раздаём остальным.
-func (p *Peer) publish(remote *webrtc.TrackRemote) {
+// id трека у получателей — "<id участника>-<label>", по нему клиент отличает экран от камеры.
+func (p *Peer) publish(remote *webrtc.TrackRemote, label string) {
 	kind := remote.Kind().String() // "audio" | "video"
-	local, err := webrtc.NewTrackLocalStaticRTP(remote.Codec().RTPCodecCapability, p.ID+"-"+kind, p.ID)
+	local, err := webrtc.NewTrackLocalStaticRTP(remote.Codec().RTPCodecCapability, p.ID+"-"+label, p.ID)
 	if err != nil {
 		log.Printf("RTC %s: track: %v", p.ID, err)
 		return
 	}
-	t := &pubTrack{key: p.ID + "/" + kind, owner: p, remote: remote, local: local}
+	t := &pubTrack{key: p.ID + "/" + label, owner: p, remote: remote, local: local}
 
 	r := p.room
 	r.mu.Lock()

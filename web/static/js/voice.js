@@ -240,6 +240,7 @@ export class Voice {
     this.pendingIce = [];
     this.chain = Promise.resolve();
     this.stopScreen(false);
+    this.stopCamera(false);
     this.releaseMic();
     this.micTrack = null;
     for (const id of [...this.remote.keys()]) this.dropRemote(id);
@@ -260,11 +261,13 @@ export class Voice {
         await pc.setRemoteDescription({ type: "offer", sdp });
         // m-line 0/1 — наши исходящие audio/video
         for (const t of pc.getTransceivers()) {
-          if (t.mid === "0" || t.mid === "1") {
+          // m-line 0/1/2 — наши исходящие: микрофон, экран, камера
+          if (t.mid === "0" || t.mid === "1" || t.mid === "2") {
             if (t.direction !== "sendrecv") t.direction = "sendrecv";
-            const want = t.mid === "0" ? this.micTrack : this.screenTrack();
+            const want = t.mid === "0" ? this.micTrack : t.mid === "1" ? this.screenTrack() : this.cameraTrack();
             if (t.sender.track !== want) await t.sender.replaceTrack(want);
             if (t.mid === "1") this.tuneVideoSender(t.sender);
+            if (t.mid === "2") this.tuneCameraSender(t.sender);
           }
         }
         const answer = await pc.createAnswer();
@@ -305,16 +308,20 @@ export class Voice {
       this.teardownAudio(r);
       r.audio = this.buildAudio(userId, track);
     } else {
-      r.video = { track, stream: new MediaStream([track]) };
-      this.hooks.onRemoteVideo(userId, r.video.stream);
+      // сервер называет треки "<id>-screen" и "<id>-camera"
+      const slot = track.id.endsWith("-camera") ? "camera" : "video";
+      r[slot] = { track, stream: new MediaStream([track]) };
+      this.hooks.onRemoteVideo(userId, r[slot].stream);
     }
     track.addEventListener("ended", () => {
       const cur = this.remote.get(userId);
       if (!cur) return;
       if (track.kind === "audio" && cur.audio && cur.audio.track === track) this.teardownAudio(cur);
-      if (track.kind === "video" && cur.video && cur.video.track === track) {
-        cur.video = null;
-        this.hooks.onRemoteVideo(userId, null);
+      for (const slot of ["video", "camera"]) {
+        if (cur[slot] && cur[slot].track === track) {
+          cur[slot] = null;
+          this.hooks.onRemoteVideo(userId, null);
+        }
       }
     });
   }
@@ -354,7 +361,7 @@ export class Voice {
     const r = this.remote.get(userId);
     if (!r) return;
     this.teardownAudio(r);
-    if (r.video) this.hooks.onRemoteVideo(userId, null);
+    if (r.video || r.camera) this.hooks.onRemoteVideo(userId, null);
     this.remote.delete(userId);
     this.speaking.delete(userId);
   }
@@ -368,6 +375,11 @@ export class Voice {
   remoteVideo(userId) {
     const r = this.remote.get(userId);
     return r && r.video ? r.video.stream : null;
+  }
+
+  remoteCamera(userId) {
+    const r = this.remote.get(userId);
+    return r && r.camera ? r.camera.stream : null;
   }
 
   // ---------- громкость ----------
@@ -462,6 +474,74 @@ export class Voice {
       await this.setMic(m);
     } catch (e) {
       this.hooks.onError("Не удалось переключить микрофон: " + e.message);
+    }
+  }
+
+  // ---------- камера ----------
+
+  cameraTrack() {
+    return this.cameraStream ? this.cameraStream.getVideoTracks()[0] || null : null;
+  }
+
+  async startCamera() {
+    if (!this.pc) return false;
+    const video = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } };
+    if (this.settings.videoDevice) video.deviceId = { exact: this.settings.videoDevice };
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+    } catch (e) {
+      if (this.settings.videoDevice && e.name === "OverconstrainedError") {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }).catch(() => null);
+      }
+      if (!stream) {
+        this.hooks.onError(
+          e.name === "NotAllowedError"
+            ? "Нет доступа к камере — разрешите её в настройках сайта (значок 🔒 в адресной строке)."
+            : e.name === "NotReadableError"
+              ? "Камера занята другой программой."
+              : "Камера не найдена."
+        );
+        return false;
+      }
+    }
+    if (!this.pc) {
+      stream.getTracks().forEach((t) => t.stop());
+      return false;
+    }
+    this.stopCamera(false);
+    this.cameraStream = stream;
+    const track = stream.getVideoTracks()[0];
+    track.contentHint = "motion";
+    track.addEventListener("ended", () => {
+      if (this.cameraStream === stream) {
+        this.stopCamera(true);
+        if (this.hooks.onCameraEnded) this.hooks.onCameraEnded();
+      }
+    });
+    const t = this.sendTransceiver("2");
+    if (t) {
+      await t.sender.replaceTrack(track);
+      this.tuneCameraSender(t.sender);
+    }
+    return true;
+  }
+
+  tuneCameraSender(sender) {
+    if (!this.cameraStream) return;
+    const params = sender.getParameters();
+    if (!params.encodings || !params.encodings.length) return;
+    params.encodings[0].maxBitrate = 1_200_000;
+    params.encodings[0].maxFramerate = 30;
+    sender.setParameters(params).catch(() => {});
+  }
+
+  stopCamera(replace = true) {
+    if (this.cameraStream) this.cameraStream.getTracks().forEach((t) => t.stop());
+    this.cameraStream = null;
+    if (replace) {
+      const t = this.sendTransceiver("2");
+      if (t) t.sender.replaceTrack(null).catch(() => {});
     }
   }
 
