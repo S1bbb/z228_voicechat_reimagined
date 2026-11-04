@@ -14,6 +14,8 @@ const DEFAULT_SETTINGS = {
   noiseSuppression: true,
   autoGainControl: true,
   rnnoise: false,
+  gate: false,
+  gateDb: -50,
   pushToTalk: false,
   pttKey: "",
   screenQuality: "1080p30",
@@ -1904,7 +1906,7 @@ function openSettings(section = "voice") {
 
 function closeSettings() {
   S.invitesRequested = false;
-  if (stopMicTest) stopMicTest();
+  if (stopMicTest) stopMicTest.stop();
   stopMicTest = null;
   if (settingsEl) settingsEl.remove();
   settingsEl = null;
@@ -1931,7 +1933,7 @@ function select(options, value, onChange) {
 function renderSettings() {
   if (!settingsEl) return;
   if (stopMicTest) {
-    stopMicTest();
+    stopMicTest.stop();
     stopMicTest = null;
   }
   settingsEl.innerHTML = "";
@@ -2015,25 +2017,47 @@ async function settingsVoice(c) {
   c.append(h("label.field", null, volLabel, vol));
 
   c.append(h("h3", null, "Проверка микрофона"));
-  const meter = h("div.meter", null, h("div"));
+  // индикатор в дБ: шкала от -80 до 0, отметка — порог гейта
+  const dbToPct = (db) => Math.max(0, Math.min(100, ((db + 80) / 80) * 100));
+  const bar = h("div");
+  const marker = h("div.meter-marker");
+  const meter = h("div.meter.meter-db", null, bar, marker);
+  const levelText = h("span.meter-text", null, "— дБ");
+  const placeMarker = () => {
+    marker.hidden = !s.gate;
+    marker.style.left = dbToPct(s.gateDb) + "%";
+  };
+  placeMarker();
+  const showLevel = ({ db, open }) => {
+    bar.style.width = dbToPct(db) + "%";
+    bar.classList.toggle("closed", !!s.gate && !open);
+    levelText.textContent = (db < -99 ? "—" : Math.round(db)) + " дБ" + (s.gate ? (open ? " · гейт открыт" : " · гейт закрыт") : "");
+  };
   const testBtn = h("button.btn.btn-primary", null, "Проверить");
+  const startTest = async () => {
+    stopMicTest = await micTest(voice.micConstraints(), showLevel, { rnnoise: s.rnnoise, gate: s.gate, thresholdDb: s.gateDb });
+    testBtn.textContent = "Остановить";
+    fillDevices(); // после разрешения появляются названия устройств
+  };
   testBtn.onclick = async () => {
     if (stopMicTest) {
-      stopMicTest();
+      stopMicTest.stop();
       stopMicTest = null;
       testBtn.textContent = "Проверить";
-      meter.firstChild.style.width = "0";
+      bar.style.width = "0";
+      levelText.textContent = "— дБ";
       return;
     }
     try {
-      stopMicTest = await micTest(voice.micConstraints(), (lvl) => (meter.firstChild.style.width = Math.round(lvl * 100) + "%"), S.settings.rnnoise);
-      testBtn.textContent = "Остановить";
-      fillDevices(); // после разрешения появляются названия устройств
+      await startTest();
     } catch (e) {
       toast("Нет доступа к микрофону: " + e.message, "error");
     }
   };
-  c.append(h("div", { style: { display: "flex", gap: "16px", alignItems: "center" } }, testBtn, meter));
+  c.append(
+    h("div", { style: { display: "flex", gap: "16px", alignItems: "center" } }, testBtn, meter, levelText),
+    h("p.muted.small", { style: { marginTop: "6px" } }, "Показывает то, что услышат другие: с шумодавом и гейтом, если они включены.")
+  );
   if (!window.isSecureContext) {
     c.append(h("p.info-box", { style: { marginTop: "16px", borderLeftColor: "var(--danger)" } }, "Страница открыта по HTTP не с localhost — браузер не даст доступ к микрофону. Откройте адрес с https://."));
   }
@@ -2066,6 +2090,53 @@ async function settingsVoice(c) {
     c.append(h("div.toggle-row", null, h("div.t", null, "Клавиша рации"), kb));
   }
 
+  function gateControls() {
+    const label = h("span", null, `Порог: ${s.gateDb} дБ`);
+    const slider = h("input", { type: "range", min: -80, max: -10, step: 1, value: s.gateDb });
+    const apply = (db) => {
+      s.gateDb = db;
+      label.textContent = `Порог: ${db} дБ`;
+      slider.value = db;
+      voice.setGateThreshold(db);
+      if (stopMicTest) stopMicTest.setThreshold(db);
+      placeMarker();
+    };
+    slider.oninput = () => apply(+slider.value);
+    slider.onchange = saveSettings;
+    const calBtn = h("button.btn", null, "Замерить шум");
+    calBtn.onclick = async () => {
+      calBtn.disabled = true;
+      try {
+        if (!stopMicTest) await startTest();
+        // на время замера гейт открыт, чтобы видеть «сырой» шум; меряем ровно эти 3 секунды
+        stopMicTest.setThreshold(-200);
+        const measured = stopMicTest.measure(3000);
+        for (let i = 3; i > 0; i--) {
+          calBtn.textContent = `Молчите, стучите по клаве… ${i}`;
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        const r = await Promise.race([measured, new Promise((_, rej) => setTimeout(() => rej(new Error("нет ответа")), 2000))]);
+        const noise = r.maxDb;
+        const db = Math.max(-75, Math.min(-15, Math.round(noise + 4)));
+        apply(db);
+        saveSettings();
+        toast(`Шум был до ${Math.round(noise)} дБ — порог поставлен на ${db} дБ. Скажите что-нибудь: гейт должен открываться.`, "ok");
+      } catch (e) {
+        if (stopMicTest) stopMicTest.setThreshold(s.gateDb);
+        toast("Не удалось замерить: " + e.message, "error");
+      } finally {
+        calBtn.disabled = false;
+        calBtn.textContent = "Замерить шум";
+      }
+    };
+    return h(
+      "div.gate-box",
+      null,
+      h("label.field", { style: { marginBottom: "8px" } }, label, slider),
+      h("div", { style: { display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" } }, calBtn, h("span.muted.small", null, "Нажмите, 3 секунды молчите и постучите по клавиатуре — порог встанет чуть выше этого шума."))
+    );
+  }
+
   c.append(h("h3", null, "Обработка звука"));
   const restart = () => {
     saveSettings();
@@ -2085,6 +2156,21 @@ async function settingsVoice(c) {
     ...(s.rnnoise
       ? []
       : [toggleRow("Шумоподавление браузера", "Простое встроенное шумоподавление. С RNNoise не нужно.", s.noiseSuppression, (v) => ((s.noiseSuppression = v), restart()))]),
+    toggleRow(
+      "Шумовой гейт",
+      "Глушит всё, что тише порога: фон, клавиатуру между фразами. Голос громче порога проходит.",
+      s.gate,
+      (v) => {
+        s.gate = v;
+        restart();
+        if (stopMicTest) {
+          stopMicTest.stop();
+          stopMicTest = null;
+        }
+        renderSettings();
+      }
+    ),
+    ...(s.gate ? [gateControls()] : []),
     toggleRow("Эхоподавление", "Нужно, если вы без наушников.", s.echoCancellation, (v) => ((s.echoCancellation = v), restart())),
     toggleRow("Автоматическая регулировка усиления", null, s.autoGainControl, (v) => ((s.autoGainControl = v), restart()))
   );

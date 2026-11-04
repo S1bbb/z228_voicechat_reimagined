@@ -1,5 +1,5 @@
-// Шумодав RNNoise (нейросеть, как в Jitsi/OBS) в AudioWorklet: убирает клавиатуру, вентилятор, улицу.
-// Нагрузка — порядка процента одного ядра. Файлы лежат в /vendor/noise-suppressor, внешних запросов нет.
+// Обработка микрофона перед отправкой: шумодав RNNoise (нейросеть, как в Jitsi/OBS) и шумовой гейт.
+// Всё работает в AudioWorklet на 48 кГц; файлы лежат у нас (/vendor/noise-suppressor, /js/gate-worklet.js).
 import { RnnoiseWorkletNode, loadRnnoise } from "../vendor/noise-suppressor/index.js";
 
 const BASE = "/vendor/noise-suppressor/";
@@ -20,34 +20,84 @@ export function noiseSuppressionSupported() {
 }
 
 /**
- * Пропускает поток микрофона через RNNoise. Возвращает обработанный поток/трек и close(),
- * который освобождает AudioContext (сам микрофон не останавливает).
+ * Цепочка: микрофон → [RNNoise] → [гейт] → поток для отправки.
+ * opts: {rnnoise, gate, thresholdDb, monitor}. Гейт ставится и при monitor (для индикатора в настройках);
+ * если сам гейт выключен, он всегда открыт и только меряет уровень.
+ * Возвращает {stream, track, close(), setThreshold(db), onLevel(cb), measure(ms)}.
  */
-export async function suppressNoise(rawStream) {
+export async function buildMicChain(rawStream, opts = {}) {
   if (!noiseSuppressionSupported()) throw new Error("AudioWorklet не поддерживается");
-  // RNNoise работает на 48 кГц — заводим отдельный контекст с этой частотой
   const ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
-  let node = null;
-  let src = null;
+  const nodes = [];
+  let gateNode = null;
   try {
-    const wasmBinary = await loadWasm();
-    await ctx.audioWorklet.addModule(BASE + "rnnoise-worklet.js");
-    src = ctx.createMediaStreamSource(rawStream);
-    node = new RnnoiseWorkletNode(ctx, { wasmBinary, maxChannels: 1 });
+    const src = ctx.createMediaStreamSource(rawStream);
+    nodes.push(src);
+    let tail = src;
+    if (opts.rnnoise) {
+      const wasmBinary = await loadWasm();
+      await ctx.audioWorklet.addModule(BASE + "rnnoise-worklet.js");
+      const rn = new RnnoiseWorkletNode(ctx, { wasmBinary, maxChannels: 1 });
+      nodes.push(rn);
+      tail = tail.connect(rn);
+    }
+    if (opts.gate || opts.monitor) {
+      await ctx.audioWorklet.addModule("/js/gate-worklet.js");
+      gateNode = new AudioWorkletNode(ctx, "z228-gate", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        processorOptions: { thresholdDb: opts.gate ? opts.thresholdDb ?? -50 : -200, holdMs: 250 },
+      });
+      nodes.push(gateNode);
+      tail = tail.connect(gateNode);
+    }
     const dest = ctx.createMediaStreamDestination();
     dest.channelCount = 1;
-    src.connect(node).connect(dest);
+    tail.connect(dest);
     if (ctx.state === "suspended") await ctx.resume().catch(() => {});
     const track = dest.stream.getAudioTracks()[0];
+
+    let levelCb = null;
+    const pending = new Map();
+    let seq = 0;
+    if (gateNode) {
+      gateNode.port.onmessage = (e) => {
+        const d = e.data || {};
+        if (d.level != null && levelCb) levelCb(d.level, d.open);
+        if (d.measured && pending.has(d.id)) {
+          pending.get(d.id)(d.measured);
+          pending.delete(d.id);
+        }
+      };
+      if (opts.monitor) gateNode.port.postMessage({ monitor: true });
+    }
     return {
       stream: dest.stream,
       track,
+      hasGate: !!gateNode,
+      setThreshold(db) {
+        if (gateNode) gateNode.port.postMessage({ thresholdDb: db });
+      },
+      onLevel(cb) {
+        levelCb = cb;
+      },
+      /** Замер уровня (после шумодава) за ms миллисекунд: {maxDb, p95Db}. */
+      measure(ms) {
+        if (!gateNode) return Promise.reject(new Error("нет гейта"));
+        const id = ++seq;
+        return new Promise((resolve) => {
+          pending.set(id, resolve);
+          gateNode.port.postMessage({ measure: ms, id });
+        });
+      },
       close() {
-        try {
-          node.destroy();
-          src.disconnect();
-          node.disconnect();
-        } catch {}
+        for (const n of nodes) {
+          try {
+            n.disconnect();
+          } catch {}
+          if (n.destroy) n.destroy();
+        }
         track.stop();
         ctx.close().catch(() => {});
       },

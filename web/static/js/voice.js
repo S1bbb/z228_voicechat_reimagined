@@ -1,4 +1,4 @@
-import { suppressNoise, noiseSuppressionSupported } from "./noise.js";
+import { buildMicChain, noiseSuppressionSupported } from "./noise.js";
 
 // Голос: одно RTCPeerConnection с сервером (SFU), микрофон, демонстрация экрана,
 // воспроизведение собеседников, громкость по людям и индикация речи.
@@ -180,18 +180,25 @@ export class Voice {
     if (this.hooks.onMic) this.hooks.onMic(true);
   }
 
-  /** Сырой поток микрофона -> то, что отправляем (через RNNoise, если включён). */
+  /** Сырой поток микрофона -> то, что отправляем (через RNNoise и/или гейт, если включены). */
   async processMic(raw) {
-    const plain = { raw, stream: raw, track: raw.getAudioTracks()[0] || null, close: null };
-    if (!this.settings.rnnoise || !noiseSuppressionSupported()) return plain;
+    const s = this.settings;
+    const plain = { raw, stream: raw, track: raw.getAudioTracks()[0] || null, close: null, chain: null };
+    if ((!s.rnnoise && !s.gate) || !noiseSuppressionSupported()) return plain;
     try {
-      const ns = await suppressNoise(raw);
-      return { raw, stream: ns.stream, track: ns.track, close: ns.close };
+      const chain = await buildMicChain(raw, { rnnoise: s.rnnoise, gate: s.gate, thresholdDb: s.gateDb });
+      return { raw, stream: chain.stream, track: chain.track, close: chain.close, chain };
     } catch (e) {
-      console.warn("rnnoise", e);
-      this.hooks.onError("Шумодав RNNoise не запустился в этом браузере — голос идёт без него.");
+      console.warn("mic chain", e);
+      this.hooks.onError("Шумодав/гейт не запустились в этом браузере — голос идёт без обработки.");
       return plain;
     }
+  }
+
+  /** Порог гейта меняем на лету, без перезапуска микрофона. */
+  setGateThreshold(db) {
+    this.settings.gateDb = db;
+    if (this.mic && this.mic.chain) this.mic.chain.setThreshold(db);
   }
 
   async setMic(m) {
@@ -636,28 +643,53 @@ export class Voice {
 }
 
 /** Индикатор уровня микрофона для проверки в настройках. */
-export async function micTest(constraints, onLevel, rnnoise = false) {
+/**
+ * Проверка микрофона в настройках: та же обработка, что в звонке (RNNoise, гейт), плюс индикатор.
+ * onLevel({db, open}) — уровень после шумодава (до гейта) и состояние гейта.
+ * Возвращает {stop(), setThreshold(db), measure(ms)}.
+ */
+export async function micTest(constraints, onLevel, opts = {}) {
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
-  // проверяем ровно то, что услышат другие: с шумодавом, если он включён
-  let ns = null;
-  if (rnnoise && noiseSuppressionSupported()) ns = await suppressNoise(stream).catch(() => null);
+  let chain = null;
+  if (noiseSuppressionSupported()) {
+    chain = await buildMicChain(stream, { rnnoise: opts.rnnoise, gate: opts.gate, thresholdDb: opts.thresholdDb, monitor: true }).catch((e) => {
+      console.warn("mic test chain", e);
+      return null;
+    });
+  }
+  if (chain) {
+    chain.onLevel((db, open) => onLevel({ db, open }));
+    return {
+      stop() {
+        chain.close();
+        stream.getTracks().forEach((t) => t.stop());
+      },
+      setThreshold: (db) => chain.setThreshold(db),
+      measure: (ms) => chain.measure(ms),
+    };
+  }
+  // запасной путь без AudioWorklet: просто уровень
   const AC = window.AudioContext || window.webkitAudioContext;
   const ctx = new AC();
   const an = ctx.createAnalyser();
   an.fftSize = 512;
-  ctx.createMediaStreamSource(ns ? ns.stream : stream).connect(an);
+  ctx.createMediaStreamSource(stream).connect(an);
   const buf = new Float32Array(512);
   const timer = setInterval(() => {
     an.getFloatTimeDomainData(buf);
     let s = 0;
     for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
-    onLevel(Math.min(1, Math.sqrt(s / buf.length) * 6));
+    const rms = Math.sqrt(s / buf.length);
+    onLevel({ db: rms > 1e-9 ? 20 * Math.log10(rms) : -180, open: true });
   }, 50);
-  return () => {
-    clearInterval(timer);
-    if (ns) ns.close();
-    stream.getTracks().forEach((t) => t.stop());
-    ctx.close();
+  return {
+    stop() {
+      clearInterval(timer);
+      stream.getTracks().forEach((t) => t.stop());
+      ctx.close();
+    },
+    setThreshold() {},
+    measure: () => Promise.reject(new Error("браузер не поддерживает замер")),
   };
 }
 

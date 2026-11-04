@@ -2271,3 +2271,34 @@ body.resizing video {
   text-transform: uppercase;
   color: var(--text-muted);
 }
+
+/* ---------- шумовой гейт ---------- */
+
+.meter-db {
+  position: relative;
+  height: 10px;
+}
+.meter-db > div:first-child.closed {
+  background: var(--text-faint);
+}
+.meter-marker {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--danger);
+  border-radius: 1px;
+}
+.meter-text {
+  min-width: 150px;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.gate-box {
+  padding: 12px 14px;
+  margin: 4px 0 8px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
