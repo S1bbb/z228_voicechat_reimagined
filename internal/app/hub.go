@@ -731,7 +731,7 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		s.send("admin", map[string]any{"ok": false})
 		h.broadcastPresence()
 
-	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute",
+	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute", "move-voice",
 		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign":
 		h.mu.Lock()
 		admin := s.admin
@@ -896,6 +896,23 @@ func (h *Hub) handleAdmin(s *session, m *inMsg) {
 			h.dropSession(target)
 			h.broadcastPresence()
 		}()
+		return
+	case "move-voice":
+		// перенести человека в другой голосовой канал: соединение переподключает сам клиент
+		ch, err := st.Channel(ctx, m.ID)
+		if err != nil || ch.Kind != "voice" {
+			s.sendError("Голосовой канал не найден.")
+			return
+		}
+		h.mu.Lock()
+		target := h.sessions[m.SessionID]
+		inVoice := target != nil && target.voiceChannel != 0
+		h.mu.Unlock()
+		if !inVoice {
+			s.sendError("Человек не в голосовом канале.")
+			return
+		}
+		target.send("voice-move", map[string]any{"channelId": ch.ID, "by": s.nickname})
 		return
 	case "server-mute":
 		h.mu.Lock()

@@ -2311,3 +2311,17 @@ body.resizing video {
 .round-btn.active {
   color: #fff;
 }
+
+/* ---------- перетаскивание участников ---------- */
+
+.voice-user[draggable="true"] {
+  cursor: grab;
+}
+body.dragging-user .channel {
+  transition: background 0.1s, box-shadow 0.1s;
+}
+.channel.drop-target {
+  background: var(--brand-dim);
+  box-shadow: inset 0 0 0 2px var(--brand);
+  color: var(--interactive-active);
+}

@@ -231,6 +231,10 @@ function onMessage(m) {
       S.voiceChannelId = m.channelId;
       renderVoicePanel();
       return;
+    case "voice-move":
+      // админ перетащил нас в другой голосовой канал
+      if (voice.active && voice.channelId !== m.channelId) joinVoice(m.channelId);
+      return;
     case "voice-left":
       if (m.joinId && m.joinId !== voice.joinId) return; // хвост прошлого входа
       lsSet("z228.voice", 0); // отключил админ или удалили канал — автоматически не возвращаемся
@@ -664,6 +668,8 @@ function renderAll() {
   renderComposerState();
 }
 
+const DRAG_TYPE = "text/z228-user";
+
 function renderChannels() {
   const root = $("#channels");
   root.innerHTML = "";
@@ -699,6 +705,24 @@ function renderChannels() {
           onclick: () => joinVoice(ch.id),
           oncontextmenu: (e) => channelMenu(e, ch),
           title: "Нажмите, чтобы подключиться",
+          // сюда можно перетащить участника из другого голосового канала
+          ondragover: (e) => {
+            if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            e.currentTarget.classList.add("drop-target");
+          },
+          ondragleave: (e) => e.currentTarget.classList.remove("drop-target"),
+          ondrop: (e) => {
+            e.currentTarget.classList.remove("drop-target");
+            const userId = e.dataTransfer.getData(DRAG_TYPE);
+            if (!userId) return;
+            e.preventDefault();
+            const u = userById(userId);
+            if (!u || u.voiceChannelId === ch.id) return;
+            if (userId === S.me.id) joinVoice(ch.id);
+            else send("move-voice", { sessionId: userId, id: ch.id });
+          },
         },
         h("span", { html: icon("speaker", 20) }),
         h("span.name", null, ch.name)
@@ -711,7 +735,22 @@ function renderChannels() {
         ul.append(
           h(
             "li.voice-user",
-            { onclick: (e) => userMenu(e, u), oncontextmenu: (e) => userMenu(e, u) },
+            {
+              onclick: (e) => userMenu(e, u),
+              oncontextmenu: (e) => userMenu(e, u),
+              // админ таскает кого угодно, остальные — только себя
+              draggable: S.admin || u.id === S.me.id ? "true" : null,
+              title: S.admin || u.id === S.me.id ? "Перетащите в другой голосовой канал" : null,
+              ondragstart: (e) => {
+                e.dataTransfer.setData(DRAG_TYPE, u.id);
+                e.dataTransfer.effectAllowed = "move";
+                document.body.classList.add("dragging-user");
+              },
+              ondragend: () => {
+                document.body.classList.remove("dragging-user");
+                $$(".drop-target").forEach((el) => el.classList.remove("drop-target"));
+              },
+            },
             avatarFor(u, 24),
             h("span.name", null, u.nickname),
             h(
