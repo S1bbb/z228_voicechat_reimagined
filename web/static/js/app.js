@@ -21,6 +21,7 @@ const DEFAULT_SETTINGS = {
   screenQuality: "1080p30",
   videoDevice: "",
   sounds: true,
+  voicePing: true,
   notifications: false,
 };
 
@@ -192,6 +193,7 @@ function onMessage(m) {
       showLogin("Вы открыли чат в другой вкладке. Здесь сессия закрыта.");
       return;
     case "kicked":
+      lsSet("z228.voice", 0);
       disconnect();
       if (m.reason === "key") {
         S.password = "";
@@ -231,6 +233,7 @@ function onMessage(m) {
       return;
     case "voice-left":
       if (m.joinId && m.joinId !== voice.joinId) return; // хвост прошлого входа
+      lsSet("z228.voice", 0); // отключил админ или удалили канал — автоматически не возвращаемся
       if (voice.active) {
         voice.leave(false);
         sfx("leave");
@@ -314,10 +317,23 @@ function onReady(m) {
   selectText(S.textId, S.view !== "text");
   renderAll();
 
+  S.readyAt = Date.now();
+  S.prevVoiceOf = null;
   if (S.rejoinVoiceId && channelById(S.rejoinVoiceId)) {
     const id = S.rejoinVoiceId;
     S.rejoinVoiceId = 0;
     joinVoice(id, true);
+  } else if (!S.autoRejoinTried) {
+    // первый вход после загрузки страницы: возвращаемся в голос, где были до F5/закрытия браузера
+    S.autoRejoinTried = true;
+    const last = lsGet("z228.voice", 0);
+    const ch = channelById(last);
+    if (ch && ch.kind === "voice") {
+      joinVoice(last, true).then(() => {
+        const active = navigator.userActivation ? navigator.userActivation.hasBeenActive : true;
+        if (!active) banner("Вы снова в «" + ch.name + "». Нажмите в любом месте окна, чтобы включить звук.", true);
+      });
+    }
   }
 }
 
@@ -336,6 +352,15 @@ function onPresence(users) {
     renderUserPanel();
   }
   const mine = myVoiceChannel();
+  const prevOf = S.prevVoiceOf;
+  S.prevVoiceOf = new Map(users.map((u) => [u.id, u.voiceChannelId || 0]));
+  // первые секунды после подключения молчим: при перезапуске сервера все переподключаются разом
+  if (prevOf && S.settings.voicePing && Date.now() - (S.readyAt || 0) > 8000) {
+    const joined = users.some(
+      (u) => u.voiceChannelId && u.id !== S.me.id && u.voiceChannelId !== mine && (prevOf.get(u.id) || 0) !== u.voiceChannelId
+    );
+    if (joined) playSfx("ping");
+  }
   if (mine) {
     const ids = voiceMembers(mine).map((u) => u.id);
     voice.syncMembers(ids);
@@ -551,11 +576,13 @@ async function joinVoice(id, silent = false) {
     return;
   }
   if (!silent) playSfx("join");
+  lsSet("z228.voice", id); // после F5 или перезапуска браузера вернёмся сюда же
   send("voice-state", { muted: S.muted, deafened: S.deafened, screen: false });
 }
 
 function leaveVoice() {
   if (!voice.active) return;
+  lsSet("z228.voice", 0);
   voice.leave(true);
   playSfx("leave");
   S.voiceChannelId = 0;
@@ -2336,6 +2363,7 @@ function settingsNotify(c) {
   c.append(h("h2", null, "Уведомления"));
   c.append(
     toggleRow("Звуки", "Вход/выход в голосовом канале, микрофон, упоминания.", S.settings.sounds, (v) => ((S.settings.sounds = v), saveSettings())),
+    toggleRow("Пинг, когда кто-то заходит в голос", "Короткий звук, если человек зашёл в любой голосовой канал, а не только в ваш. Без всплывающих окон.", S.settings.voicePing, (v) => ((S.settings.voicePing = v), saveSettings())),
     toggleRow("Уведомления на рабочем столе", "Когда вас упоминают, а вкладка свёрнута.", S.settings.notifications, async (v) => {
       if (v && "Notification" in window && Notification.permission !== "granted") {
         const p = await Notification.requestPermission();
@@ -2583,6 +2611,7 @@ function settingsDonate(c) {
 }
 
 function logout() {
+  lsSet("z228.voice", 0);
   closeSettings();
   disconnect();
   S.nick = "";
@@ -2754,6 +2783,16 @@ function bindUi() {
       m.append(menuItem("Войти как админ", () => openSettings("admin"), { iconName: "crown" }));
     }
     m.append(
+      ...(S.installPrompt
+        ? [
+            menuItem("Установить приложение", async () => {
+              const p = S.installPrompt;
+              S.installPrompt = null;
+              p.prompt();
+              await p.userChoice.catch(() => {});
+            }, { iconName: "download" }),
+          ]
+        : []),
       menuItem("Настройки", () => openSettings("voice"), { iconName: "gear" }),
       menuItem("Поддержать", () => openSettings("donate"), { iconName: "heart" }),
       h("div.menu-sep"),
@@ -2844,7 +2883,10 @@ function bindUi() {
   };
 
   // браузеры не дают проигрывать звук до первого клика — разблокируем
-  document.addEventListener("pointerdown", () => voice.audioCtx(), { once: true });
+  document.addEventListener("pointerdown", () => {
+    voice.unlockAudio();
+    if ($("#connBanner").textContent.includes("включить звук")) banner(null);
+  });
 
   window.addEventListener("beforeunload", () => {
     if (S.ws) S.ws.close();
@@ -2875,6 +2917,12 @@ window.addEventListener("hashchange", () => {
     disconnect();
     connect();
   }
+});
+
+// браузер предлагает установить чат как приложение — перехватываем и показываем пункт в меню сервера
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  S.installPrompt = e;
 });
 
 bindUi();

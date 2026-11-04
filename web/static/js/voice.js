@@ -477,6 +477,13 @@ export class Voice {
     }
   }
 
+  /** Браузер не играет звук до первого клика: после автовозврата в голос «размораживаем» всё по клику. */
+  unlockAudio() {
+    this.audioCtx();
+    for (const r of this.remote.values()) if (r.audio) r.audio.el.play().catch(() => {});
+    if (this.mic && this.mic.chain && this.mic.chain.resume) this.mic.chain.resume();
+  }
+
   // ---------- камера ----------
 
   cameraTrack() {
@@ -789,6 +796,7 @@ export function sfx(kind) {
       unmute: [[330, 0], [440, 0.06]],
       message: [[880, 0], [1175, 0.07]],
       deafen: [[392, 0], [262, 0.07]],
+      ping: [[1319, 0]],
       undeafen: [[262, 0], [392, 0.07]],
     }[kind];
     if (!seq) return;

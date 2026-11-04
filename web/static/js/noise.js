@@ -76,6 +76,7 @@ export async function buildMicChain(rawStream, opts = {}) {
       stream: dest.stream,
       track,
       hasGate: !!gateNode,
+      resume: () => ctx.resume().catch(() => {}),
       setThreshold(db) {
         if (gateNode) gateNode.port.postMessage({ thresholdDb: db });
       },

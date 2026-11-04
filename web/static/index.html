@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
     <title>ZALUPA228</title>
-    <link rel="icon" type="image/png" href="/logo.png" />
+    <link rel="icon" type="image/png" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#23262d" />
     <link rel="stylesheet" href="/style.css" />
     <script>
       try {
@@ -135,5 +138,9 @@
     <div id="lightbox" class="lightbox" hidden></div>
 
     <script type="module" src="/js/app.js"></script>
+    <script>
+      // установка как приложения (PWA); с самоподписанным сертификатом браузер может отказать — это не страшно
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+    </script>
   </body>
 </html>
