@@ -300,6 +300,7 @@ function onMessage(m) {
       return;
     case "desktop-invite":
       S.desktopInvite = m;
+      if (S.onDesktopInvite) S.onDesktopInvite(m);
       if (settingsSection === "admin") renderSettings();
       return;
     case "pong":
@@ -2792,7 +2793,7 @@ function inviteLink(code) {
   return `${location.origin}/#k=${code}`;
 }
 
-async function copyText(text) {
+async function copyText(text, msg = "Ссылка скопирована — отправьте её другу.") {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -2803,7 +2804,7 @@ async function copyText(text) {
     document.execCommand("copy");
     ta.remove();
   }
-  toast("Ссылка скопирована — отправьте её другу.", "ok");
+  toast(msg, "ok");
 }
 
 function settingsAccess(c) {
@@ -2960,6 +2961,94 @@ function settingsDonate(c) {
   );
 }
 
+// ---------- приложение для Windows ----------
+
+const DESKTOP_REPO = "S1bbb/z228_voicechat_reimagined";
+const DESKTOP_RELEASES = `https://github.com/${DESKTOP_REPO}/releases`;
+
+// последний релиз десктопа на GitHub: {version, url, size}; null — не нашли
+let desktopReleaseCache = null;
+async function latestDesktopRelease() {
+  if (desktopReleaseCache) return desktopReleaseCache;
+  const r = await fetch(`https://api.github.com/repos/${DESKTOP_REPO}/releases?per_page=20`, { headers: { Accept: "application/vnd.github+json" } });
+  if (!r.ok) throw new Error("GitHub ответил " + r.status);
+  for (const rel of await r.json()) {
+    if (rel.draft || rel.prerelease || !String(rel.tag_name).startsWith("desktop-v")) continue;
+    const exe = (rel.assets || []).find((a) => /-setup\.exe$/i.test(a.name));
+    if (exe) return (desktopReleaseCache = { version: rel.tag_name.replace(/^desktop-v/, ""), url: exe.browser_download_url, size: exe.size });
+  }
+  return null;
+}
+
+// строка-приглашение для приложения из данных сервера и своего ключа
+function desktopInviteString(di, code) {
+  let host = location.host;
+  if (location.protocol !== "https:") {
+    if (!di.httpsPort) return "";
+    host = location.hostname + ":" + di.httpsPort;
+  }
+  const q = new URLSearchParams();
+  if (di.spki) q.set("fp", di.spki);
+  if (code) q.set("k", code);
+  if (di.name) q.set("n", di.name);
+  return `z228://${host}/?${q}`;
+}
+
+function desktopAppDialog() {
+  const status = h("p.muted.small", { style: { margin: "8px 0 0" } }, "Ищу последнюю версию…");
+  const dl = h("a.btn.btn-primary", { href: `${DESKTOP_RELEASES}/latest`, target: "_blank", rel: "noopener", style: { display: "inline-flex", alignItems: "center", gap: "8px", textDecoration: "none" } });
+  dl.innerHTML = icon("download", 18);
+  dl.append("Скачать для Windows");
+  latestDesktopRelease()
+    .then((rel) => {
+      if (!rel) {
+        status.textContent = "Готовой сборки пока нет — откроется страница релизов.";
+        return;
+      }
+      dl.href = rel.url;
+      dl.removeAttribute("target");
+      status.textContent = `Версия ${rel.version} · ${fmtSize(rel.size)} · Windows 10/11`;
+    })
+    .catch(() => (status.textContent = "Не удалось спросить GitHub — откроется страница релизов."));
+
+  const body = [
+    h(
+      "p",
+      { style: { marginTop: 0 } },
+      "Приложение ZALUPA228: рация, мьют и оглушение на клавишах, которые работают поверх игр (и на боковых кнопках мыши), значок в трее, автообновление."
+    ),
+    h("div", null, dl, status),
+  ];
+
+  // строка для первого входа: свой ключ уже есть в браузере — не надо просить у админа
+  const inviteBox = h("div", { style: { marginTop: "16px" } });
+  body.push(inviteBox);
+  const fillInvite = (di) => {
+    inviteBox.innerHTML = "";
+    const str = desktopInviteString(di, S.password);
+    if (!str) return;
+    const inp = h("input.input", { readonly: true, value: str, style: { flex: "1", height: "32px", fontSize: "13px" }, onclick: (e) => e.target.select() });
+    inviteBox.append(
+      h("div.small", { style: { fontWeight: 600, marginBottom: "6px" } }, "Строка для входа в приложение"),
+      h("div", { style: { display: "flex", gap: "8px" } }, inp, h("button.btn.btn-sm", { onclick: () => copyText(str, "Строка скопирована — вставьте её в приложение.") }, "Копировать")),
+      h("p.muted.small", { style: { margin: "6px 0 0" } }, "Приложение спросит её при первом запуске. В ней адрес сервера, отпечаток его сертификата и ваш ключ — никому не пересылайте.")
+    );
+  };
+  if (S.ready) {
+    if (S.desktopInvite) fillInvite(S.desktopInvite);
+    S.onDesktopInvite = fillInvite;
+    send("desktop-invite");
+  }
+  body.push(
+    h(
+      "p.muted.small",
+      { style: { marginBottom: 0, marginTop: "16px" } },
+      "Windows может показать «Windows защитила ваш компьютер» — нажмите «Подробнее» → «Выполнить в любом случае»: установщик не подписан платным сертификатом."
+    )
+  );
+  modal({ title: "Приложение для Windows", body, okText: "Готово", cancelText: null, onOk: () => (S.onDesktopInvite = null) });
+}
+
 function logout() {
   lsSet("z228.voice", 0);
   closeSettings();
@@ -2990,6 +3079,7 @@ function showLogin(error, needPassword) {
   err.hidden = !error;
   err.textContent = error || "";
   $("#loginHint").textContent = window.isSecureContext ? "" : "⚠ Страница открыта по HTTP — микрофон будет недоступен. Используйте https://";
+  $("#loginApp").hidden = isDesktop;
   setTimeout(() => (needPassword ? $("#loginPassword") : $("#loginNick")).focus());
 }
 
@@ -3143,6 +3233,7 @@ function bindUi() {
             }, { iconName: "download" }),
           ]
         : []),
+      ...(isDesktop ? [] : [menuItem("Приложение для Windows", desktopAppDialog, { iconName: "download" })]),
       menuItem("Настройки", () => openSettings("voice"), { iconName: "gear" }),
       menuItem("Поддержать", () => openSettings("donate"), { iconName: "heart" }),
       h("div.menu-sep"),
@@ -3279,6 +3370,11 @@ window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
   S.installPrompt = e;
 });
+
+$("#loginApp").onclick = (e) => {
+  e.preventDefault();
+  desktopAppDialog();
+};
 
 bindUi();
 applyTheme();

@@ -2345,3 +2345,10 @@ body.dragging-user .channel {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   font-size: 14px;
 }
+
+.login-app {
+  display: block;
+  margin-top: 12px;
+  text-align: center;
+  color: var(--text-link, var(--brand));
+}

@@ -728,6 +728,14 @@ func (h *Hub) handle(s *session, m *inMsg) {
 			}
 		}
 
+	case "desktop-invite":
+		// данные для строки-приглашения десктопа: z228://host:port/?fp=…&k=…&n=…
+		// Отпечаток ключа сертификата не секрет (его видит любой TLS-клиент), поэтому — любому вошедшему.
+		h.mu.Lock()
+		pin := h.certSPKI
+		h.mu.Unlock()
+		s.send("desktop-invite", map[string]any{"code": strings.TrimSpace(m.Text), "spki": pin, "name": h.opts.ServerName, "httpsPort": h.opts.HTTPSPort})
+
 	case "admin-login":
 		if h.guard.blocked(s.ip) {
 			s.send("admin", map[string]any{"ok": false, "message": "Слишком много неверных попыток. Попробуйте через 15 минут."})
@@ -755,20 +763,12 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		h.broadcastPresence()
 
 	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute", "move-voice",
-		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign", "backup-download", "desktop-invite":
+		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign", "backup-download":
 		h.mu.Lock()
 		admin := s.admin
 		h.mu.Unlock()
 		if !admin {
 			s.sendError("Нужны права администратора.")
-			return
-		}
-		if m.Type == "desktop-invite" {
-			// данные для строки-приглашения десктопа: z228://host:port/?fp=…&k=…&n=…
-			h.mu.Lock()
-			pin := h.certSPKI
-			h.mu.Unlock()
-			s.send("desktop-invite", map[string]any{"code": strings.TrimSpace(m.Text), "spki": pin, "name": h.opts.ServerName, "httpsPort": h.opts.HTTPSPort})
 			return
 		}
 		if m.Type == "backup-download" {
