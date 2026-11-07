@@ -232,6 +232,15 @@ function onMessage(m) {
       S.voiceChannelId = m.channelId;
       renderVoicePanel();
       return;
+    case "backup-link": {
+      // одноразовая ссылка на архив — сразу запускаем скачивание
+      const a = h("a", { href: m.url, download: "" });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      toast("Готовлю архив — скачивание начнётся через пару секунд.", "ok");
+      return;
+    }
     case "voice-move":
       // админ перетащил нас в другой голосовой канал
       if (voice.active && voice.channelId !== m.channelId) joinVoice(m.channelId);
@@ -2514,6 +2523,16 @@ function settingsAdmin(c) {
   }
   settingsAccess(c);
   settingsRoles(c);
+  c.append(
+    h("h3", null, "Резервные копии"),
+    h(
+      "p.muted.small",
+      null,
+      "Сервер сам раз в сутки копирует базу (чат, каналы, роли, ключи, аватарки) и хранит 7 последних копий у себя. " +
+        "Скачайте полную копию к себе — она переживёт даже потерю VPS. В архиве база и все загруженные файлы."
+    ),
+    h("button.btn", { onclick: () => send("backup-download") }, "Скачать резервную копию")
+  );
   c.append(h("h3", null, "Каналы"));
   const list = h("div.admin-list");
   for (const ch of S.channels) {

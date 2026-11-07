@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -135,6 +136,13 @@ func Open(dataDir string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// Snapshot пишет целостную копию базы в path (VACUUM INTO) — на ходу, без остановки сервера.
+func (s *Store) Snapshot(ctx context.Context, path string) error {
+	_ = os.Remove(path)
+	_, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path)
+	return err
+}
 
 func (s *Store) seed(ctx context.Context) error {
 	var n int

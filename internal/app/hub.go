@@ -38,6 +38,7 @@ type Options struct {
 	AdminPassword  string
 	UploadDir      string
 	MaxUploadBytes int64
+	DataDir        string // для резервных копий
 }
 
 type Hub struct {
@@ -745,12 +746,16 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		h.broadcastPresence()
 
 	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute", "move-voice",
-		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign":
+		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign", "backup-download":
 		h.mu.Lock()
 		admin := s.admin
 		h.mu.Unlock()
 		if !admin {
 			s.sendError("Нужны права администратора.")
+			return
+		}
+		if m.Type == "backup-download" {
+			s.send("backup-link", map[string]any{"url": "/api/backup?t=" + h.backupToken()})
 			return
 		}
 		if strings.HasPrefix(m.Type, "invite") {

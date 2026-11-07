@@ -113,12 +113,16 @@ func main() {
 		ServerPassword: cfg.ServerPassword,
 		AdminPassword:  adminPassword,
 		UploadDir:      uploadDir,
+		DataDir:        cfg.DataDir,
 		MaxUploadBytes: int64(cfg.MaxUploadMB) << 20,
 	})
+
+	app.StartBackups(st, filepath.Join(cfg.DataDir, "backups"), 7)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", hub.ServeWS)
 	mux.HandleFunc("/api/upload", hub.HandleUpload)
+	mux.HandleFunc("/api/backup", hub.HandleBackup)
 	mux.Handle("/uploads/", hub.UploadsHandler())
 	mux.Handle("/", staticHandler(cfg.WebDir))
 
