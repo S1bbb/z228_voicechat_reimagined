@@ -6,9 +6,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"math/big"
 	"net"
@@ -18,7 +20,8 @@ import (
 )
 
 // LoadOrCreate возвращает сертификат из dir; пересоздаёт, если его нет, он истекает
-// или в нём не хватает каких-то из ips.
+// или в нём не хватает каких-то из ips. При перевыпуске ключ сохраняется (если читается):
+// десктоп-приложение пинит отпечаток открытого ключа (SPKI), и он не должен меняться.
 func LoadOrCreate(dir string, ips []net.IP) (tls.Certificate, error) {
 	certPath := filepath.Join(dir, "selfsigned.crt")
 	keyPath := filepath.Join(dir, "selfsigned.key")
@@ -31,9 +34,13 @@ func LoadOrCreate(dir string, ips []net.IP) (tls.Certificate, error) {
 		}
 	}
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, err
+	key := loadKey(keyPath)
+	if key == nil {
+		var err error
+		key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return tls.Certificate{}, err
+		}
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
@@ -66,6 +73,34 @@ func LoadOrCreate(dir string, ips []net.IP) (tls.Certificate, error) {
 		_ = os.WriteFile(keyPath, keyPEM, 0o600)
 	}
 	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+// loadKey читает существующий ECDSA-ключ; nil — если файла нет или он испорчен.
+func loadKey(path string) *ecdsa.PrivateKey {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	blk, _ := pem.Decode(b)
+	if blk == nil {
+		return nil
+	}
+	if k, err := x509.ParseECPrivateKey(blk.Bytes); err == nil {
+		return k
+	}
+	if k, err := x509.ParsePKCS8PrivateKey(blk.Bytes); err == nil {
+		if ek, ok := k.(*ecdsa.PrivateKey); ok {
+			return ek
+		}
+	}
+	return nil
+}
+
+// SPKIPin — SHA-256 от SubjectPublicKeyInfo сертификата, base64url без «=».
+// Так десктоп-приложение узнаёт «свой» сервер с самоподписанным сертификатом.
+func SPKIPin(c *x509.Certificate) string {
+	sum := sha256.Sum256(c.RawSubjectPublicKeyInfo)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func coversAll(leaf *x509.Certificate, ips []net.IP) bool {

@@ -1,0 +1,66 @@
+name: desktop
+
+# Релиз десктоп-приложения: git tag desktop-v0.1.1 && git push fork desktop-v0.1.1
+# Версия берётся из тега. В релиз уходят NSIS-установщик, его подпись и latest.json для автообновления.
+on:
+  push:
+    tags: ["desktop-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - name: Версия из тега
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^desktop-v', ''
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "Тег должен быть вида desktop-v1.2.3, а не ${{ github.ref_name }}" }
+          $f = "desktop/src-tauri/tauri.conf.json"
+          $j = Get-Content $f -Raw | ConvertFrom-Json
+          $j.version = $v
+          [IO.File]::WriteAllText((Resolve-Path $f), ($j | ConvertTo-Json -Depth 20))
+          "Версия: $v"
+
+      - name: Зависимости
+        working-directory: desktop
+        run: npm ci
+
+      - name: Тесты
+        working-directory: desktop/src-tauri
+        run: cargo test --locked
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: ZALUPA228 Desktop __VERSION__
+          releaseBody: |
+            Установщик для Windows 10/11 — файл `ZALUPA228_…_x64-setup.exe`.
+            Уже установленное приложение обновится само (спросит перед установкой).
+
+            Windows может показать «Windows защитила ваш компьютер»: нажмите «Подробнее» → «Выполнить в любом случае».
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true

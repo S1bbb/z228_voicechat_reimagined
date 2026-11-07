@@ -431,6 +431,7 @@ export class Voice {
       if (r.audio && r.audio.el.setSinkId) await r.audio.el.setSinkId(id || "").catch(() => {});
     }
     if (this.ctx && this.ctx.setSinkId) await this.ctx.setSinkId(id || "").catch(() => {});
+    setSfxOutput(id);
   }
 
   // ---------- микрофон ----------
@@ -783,10 +784,21 @@ export async function micTest(constraints, onLevel, opts = {}) {
 // ---------- звуки интерфейса ----------
 
 let sfxCtx = null;
+let sfxSink = "";
+
+/** Звуки интерфейса идут на то же устройство вывода, что и голос. */
+export function setSfxOutput(id) {
+  sfxSink = id || "";
+  if (sfxCtx && sfxCtx.setSinkId) sfxCtx.setSinkId(sfxSink).catch(() => {});
+}
+
 export function sfx(kind) {
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
-    sfxCtx = sfxCtx || new AC();
+    if (!sfxCtx) {
+      sfxCtx = new AC();
+      if (sfxSink && sfxCtx.setSinkId) sfxCtx.setSinkId(sfxSink).catch(() => {});
+    }
     const ctx = sfxCtx;
     if (ctx.state === "suspended") ctx.resume();
     const seq = {
@@ -798,20 +810,23 @@ export function sfx(kind) {
       deafen: [[392, 0], [262, 0.07]],
       ping: [[1319, 0]],
       undeafen: [[262, 0], [392, 0.07]],
+      // рация: тихий короткий щелчок [частота, начало, громкость, длительность]
+      "ptt-on": [[1400, 0, 0.045, 0.035]],
+      "ptt-off": [[950, 0, 0.035, 0.035]],
     }[kind];
     if (!seq) return;
     const t0 = ctx.currentTime;
-    for (const [freq, at] of seq) {
+    for (const [freq, at, vol = 0.12, dur = 0.16] of seq) {
       const o = ctx.createOscillator();
       const g = ctx.createGain();
       o.type = "sine";
       o.frequency.value = freq;
       g.gain.setValueAtTime(0, t0 + at);
-      g.gain.linearRampToValueAtTime(0.12, t0 + at + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.16);
+      g.gain.linearRampToValueAtTime(vol, t0 + at + Math.min(0.01, dur / 4));
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
       o.connect(g).connect(ctx.destination);
       o.start(t0 + at);
-      o.stop(t0 + at + 0.18);
+      o.stop(t0 + at + dur + 0.02);
     }
   } catch {}
 }

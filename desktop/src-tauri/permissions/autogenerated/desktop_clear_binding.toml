@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-clear-binding"
+description = "Enables the desktop_clear_binding command without any pre-configured scope."
+commands.allow = ["desktop_clear_binding"]
+
+[[permission]]
+identifier = "deny-desktop-clear-binding"
+description = "Denies the desktop_clear_binding command without any pre-configured scope."
+commands.deny = ["desktop_clear_binding"]

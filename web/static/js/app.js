@@ -1,6 +1,7 @@
 import { $, $$, h, avatar, avatarColor, setAvatarSource, lsGet, lsSet, randomId, renderMarkdown, mentionsMe, isEmojiOnly, fmtTime, fmtFull, fmtStamp, fmtDay, sameDay, fmtSize } from "./util.js";
 import { icon } from "./icons.js";
-import { Voice, micTest, sfx, rtcConstructor, rtcDiagnostics, qualityLevel } from "./voice.js";
+import { Voice, micTest, sfx, setSfxOutput, rtcConstructor, rtcDiagnostics, qualityLevel } from "./voice.js";
+import { isDesktop, initDesktop, desktopInfo, desktopPtt, desktopBinding, refreshInfo as refreshDesktopInfo, invoke as desktopInvoke, stateChanged as desktopStateChanged } from "./desktop.js";
 import { EMOJI_GROUPS, QUICK_REACTIONS } from "./emoji.js";
 
 // ============================================================ состояние
@@ -80,6 +81,7 @@ const voice = new Voice((type, payload) => send(type, payload), {
   onSpeaking: (set) => {
     S.speaking = set;
     for (const el of $$("[data-speak]")) el.classList.toggle("speaking", set.has(el.dataset.speak));
+    desktopStateChanged();
   },
   onRemoteVideo: () => renderStage(),
   onCameraEnded: () => {
@@ -103,6 +105,7 @@ voice.volumes = S.volumes;
 voice.localMutes = S.localMutes;
 voice.muted = S.muted;
 voice.deafened = S.deafened;
+setSfxOutput(S.settings.outputDevice);
 
 function saveSettings() {
   lsSet("z228.settings", S.settings);
@@ -295,6 +298,10 @@ function onMessage(m) {
       S.invites = m;
       if (settingsSection === "admin") renderSettings();
       return;
+    case "desktop-invite":
+      S.desktopInvite = m;
+      if (settingsSection === "admin") renderSettings();
+      return;
     case "pong":
       S.ping = Math.round(performance.now() - m.t);
       renderVoicePanel();
@@ -344,7 +351,8 @@ function onReady(m) {
     const ch = channelById(last);
     if (ch && ch.kind === "voice") {
       joinVoice(last, true).then(() => {
-        const active = navigator.userActivation ? navigator.userActivation.hasBeenActive : true;
+        // в приложении автовоспроизведение разрешено флагом WebView2 — звук играет без клика
+        const active = isDesktop || (navigator.userActivation ? navigator.userActivation.hasBeenActive : true);
         if (!active) banner("Вы снова в «" + ch.name + "». Нажмите в любом месте окна, чтобы включить звук.", true);
       });
     }
@@ -621,6 +629,7 @@ function toggleMute() {
   send("voice-state", { muted: S.muted, deafened: S.deafened });
   renderUserPanel();
   renderStage();
+  desktopStateChanged();
 }
 
 function toggleDeafen() {
@@ -631,6 +640,7 @@ function toggleDeafen() {
   send("voice-state", { muted: S.muted, deafened: S.deafened });
   renderUserPanel();
   renderStage();
+  desktopStateChanged();
 }
 
 async function toggleCamera() {
@@ -857,6 +867,7 @@ function renderUserPanel() {
 }
 
 function renderVoicePanel() {
+  desktopStateChanged();
   const panel = $("#voicePanel");
   const chId = voice.active ? voice.channelId : 0;
   panel.hidden = !chId;
@@ -2072,6 +2083,7 @@ function openSettings(section = "voice") {
 
 function closeSettings() {
   S.invitesRequested = false;
+  S.desktopInviteRequested = false;
   if (stopMicTest) stopMicTest.stop();
   stopMicTest = null;
   if (settingsEl) settingsEl.remove();
@@ -2117,6 +2129,7 @@ function renderSettings() {
       navBtn("look", "Внешний вид"),
       navBtn("notify", "Уведомления"),
       navBtn("keys", "Горячие клавиши"),
+      isDesktop ? navBtn("app", "Приложение") : null,
       h("div.category", null, "Сервер"),
       navBtn("admin", "Администрирование"),
       navBtn("donate", "Поддержать"),
@@ -2132,7 +2145,7 @@ function renderSettings() {
     h("div.settings-close", null, h("button.icon-btn", { html: icon("close", 18), onclick: closeSettings }), "ESC")
   );
   settingsEl.append(nav, wrap);
-  ({ profile: settingsProfile, voice: settingsVoice, look: settingsLook, notify: settingsNotify, keys: settingsKeys, admin: settingsAdmin, donate: settingsDonate })[settingsSection](content);
+  ({ profile: settingsProfile, voice: settingsVoice, look: settingsLook, notify: settingsNotify, keys: settingsKeys, app: settingsApp, admin: settingsAdmin, donate: settingsDonate })[settingsSection](content);
 }
 
 async function settingsVoice(c) {
@@ -2243,7 +2256,19 @@ async function settingsVoice(c) {
   }
 
   c.append(h("h3", null, "Режим ввода"));
-  c.append(
+  if (isDesktop) {
+    c.append(
+      h(
+        "div.info-box",
+        null,
+        desktopPtt() ? "Режим рации включён: клавиша назначена в приложении. " : "Сейчас микрофон работает постоянно. ",
+        "Клавиши рации, мьюта и оглушения (работают поверх игр) — в разделе ",
+        h("a", { href: "#", onclick: (e) => (e.preventDefault(), (settingsSection = "app"), renderSettings()) }, "«Приложение»"),
+        "."
+      )
+    );
+  }
+  if (!isDesktop) c.append(
     toggleRow("Режим рации (Push-to-Talk)", "Микрофон работает, только пока зажата клавиша. Работает, когда окно чата активно.", s.pushToTalk, (v) => {
       s.pushToTalk = v;
       saveSettings();
@@ -2251,7 +2276,7 @@ async function settingsVoice(c) {
       renderSettings();
     })
   );
-  if (s.pushToTalk) {
+  if (s.pushToTalk && !isDesktop) {
     const kb = h("button.keybind", null, s.pttKey ? keyLabel(s.pttKey) : "Не назначена");
     kb.onclick = () => {
       kb.classList.add("recording");
@@ -2493,6 +2518,7 @@ function settingsNotify(c) {
 
 function settingsKeys(c) {
   c.append(h("h2", null, "Горячие клавиши"));
+  if (isDesktop) c.append(h("p.muted", null, "Это клавиши окна чата. Глобальные клавиши, которые работают поверх игр, — в разделе «Приложение»."));
   const rows = [
     ["Ctrl + Shift + M", "Выключить / включить микрофон"],
     ["Ctrl + Shift + D", "Выключить / включить звук"],
@@ -2505,6 +2531,144 @@ function settingsKeys(c) {
   for (const [k, d] of rows) c.append(h("div.toggle-row", null, h("div.t", null, d), h("span.keybind", { style: { display: "inline-flex", alignItems: "center" } }, k)));
   c.append(h("h3", null, "Разметка сообщений"));
   c.append(h("div.info-box", { html: "<b>**жирный**</b> · <i>*курсив*</i> · <u>__подчёркнутый__</u> · <s>~~зачёркнутый~~</s> · ||спойлер|| · `код` · ```блок кода``` · &gt; цитата · @ник" }));
+}
+
+// ---------- приложение (только в десктопе) ----------
+
+function settingsApp(c) {
+  const info = desktopInfo();
+  c.append(h("h2", null, "Приложение"));
+  if (!info) {
+    c.append(h("p.muted", null, "Нет связи с приложением. Перезапустите ZALUPA228."));
+    return;
+  }
+  const setOptions = (patch) =>
+    desktopInvoke("desktop_set_options", { pttReleaseMs: info.pttReleaseMs, pttSound: info.pttSound, ...patch })
+      .then(refreshDesktopInfo)
+      .catch((e) => toast("Не удалось сохранить: " + e, "error"));
+
+  c.append(
+    h("h3", null, "Глобальные клавиши"),
+    h(
+      "p.muted.small",
+      null,
+      "Работают поверх игр и когда окно свёрнуто в трей. Нажатие не перехватывается — клавиша доходит и до игры. " +
+        "Можно назначить клавишу, сочетание с Ctrl / Shift / Alt или боковую кнопку мыши (Mouse4, Mouse5)."
+    )
+  );
+  const actions = [
+    ["ptt", "Рация", "Микрофон открыт, пока клавиша зажата"],
+    ["mute", "Мьют", "Выключить / включить микрофон"],
+    ["deafen", "Оглушение", "Выключить / включить звук"],
+  ];
+  for (const [action, title, desc] of actions) {
+    const b = info.bindings && info.bindings[action];
+    const kb = h("button.keybind", null, b ? b.name : "Не назначена");
+    kb.onclick = async () => {
+      kb.classList.add("recording");
+      kb.textContent = "Нажмите клавишу… (Esc — отмена)";
+      // пока приложение ловит нажатие, страница его не обрабатывает (иначе Esc закроет настройки)
+      const block = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      };
+      window.addEventListener("keydown", block, true);
+      window.addEventListener("keyup", block, true);
+      try {
+        await desktopInvoke("desktop_record_binding", { action });
+      } catch (e) {
+        toast("Не удалось назначить клавишу: " + e, "error");
+      }
+      setTimeout(() => {
+        window.removeEventListener("keydown", block, true);
+        window.removeEventListener("keyup", block, true);
+      }, 400);
+      await refreshDesktopInfo();
+      if (settingsSection === "app") renderSettings();
+    };
+    const clear = b
+      ? h(
+          "button.btn.btn-sm",
+          {
+            onclick: async () => {
+              await desktopInvoke("desktop_clear_binding", { action }).catch((e) => toast(String(e), "error"));
+              await refreshDesktopInfo();
+              renderSettings();
+            },
+          },
+          "Снять"
+        )
+      : null;
+    c.append(
+      h(
+        "div.toggle-row",
+        null,
+        h("div", null, h("div.t", null, title), h("div.d", null, desc)),
+        h("div", { style: { display: "flex", gap: "8px", alignItems: "center" } }, clear, kb)
+      )
+    );
+  }
+
+  const relText = (ms) => `Задержка отпускания рации: ${ms} мс`;
+  const relLabel = h("span", null, relText(info.pttReleaseMs));
+  const rel = h("input", { type: "range", min: 0, max: 1000, step: 10, value: info.pttReleaseMs });
+  rel.oninput = () => (relLabel.textContent = relText(rel.value));
+  rel.onchange = () => setOptions({ pttReleaseMs: +rel.value });
+  c.append(
+    h("label.field", { style: { marginTop: "16px" } }, relLabel, rel),
+    h("p.muted.small", null, "Микрофон закрывается чуть позже, чем вы отпустили клавишу, — чтобы не обрезался конец слова."),
+    toggleRow("Звук рации", "Тихий щелчок при нажатии и отпускании клавиши рации.", info.pttSound, (v) => setOptions({ pttSound: v })),
+    h(
+      "div.info-box",
+      { style: { marginTop: "16px", borderLeftColor: "var(--warning)" } },
+      h("b", null, "Если клавиши не работают в игре. "),
+      "Игра, запущенная от администратора, не пускает к себе клавиши из обычных программ — запустите ZALUPA228 тоже от администратора " +
+        "(правой кнопкой по ярлыку → «Запуск от имени администратора»). Клавиши ловятся так же, как в Discord; некоторые античиты такое не любят, но обычно всё работает."
+    )
+  );
+
+  const sc = h("button.btn", null, info.shortcut ? "Создать заново" : "Создать ярлык");
+  sc.onclick = async () => {
+    sc.disabled = true;
+    try {
+      await desktopInvoke("desktop_create_shortcut");
+      toast("Ярлык ZALUPA228 появился на рабочем столе.", "ok");
+      await refreshDesktopInfo();
+      if (settingsSection === "app") renderSettings();
+    } catch (e) {
+      toast("Не удалось создать ярлык: " + e, "error");
+      sc.disabled = false;
+    }
+  };
+  c.append(
+    h("h3", null, "Ярлык"),
+    h(
+      "div.toggle-row",
+      null,
+      h("div", null, h("div.t", null, "Ярлык на рабочем столе"), h("div.d", null, info.shortcut ? "Есть на рабочем столе." : "Сейчас ярлыка нет — ZALUPA228 можно найти в меню «Пуск».")),
+      sc
+    )
+  );
+
+  c.append(
+    h("h3", null, "Сервер"),
+    h("div.toggle-row", null, h("div", null, h("div.t", null, info.name || info.server || "—"), h("div.d", null, info.server || "")), h("button.btn", { onclick: () => desktopInvoke("desktop_change_server").catch(() => {}) }, "Сменить сервер…"))
+  );
+
+  const upd = h("button.btn", null, "Проверить обновления");
+  upd.onclick = async () => {
+    upd.disabled = true;
+    upd.textContent = "Проверяю…";
+    try {
+      const r = await desktopInvoke("desktop_check_update");
+      if (!r || !r.available) toast("Установлена последняя версия.", "ok");
+    } catch (e) {
+      toast("Не удалось проверить обновления: " + e, "error");
+    }
+    upd.disabled = false;
+    upd.textContent = "Проверить обновления";
+  };
+  c.append(h("h3", null, "Версия"), h("div.toggle-row", null, h("div.t", null, `ZALUPA228 Desktop ${info.version}`), upd));
 }
 
 function settingsAdmin(c) {
@@ -2722,6 +2886,70 @@ function settingsAccess(c) {
       "Совет: делайте отдельный ключ на каждого — тогда можно отозвать доступ одному человеку, не трогая остальных."
     )
   );
+  settingsDesktopLink(c, info);
+}
+
+// строка-приглашение для десктоп-приложения: z228://host:port/?fp=<SPKI>&k=<ключ>&n=<название>
+function settingsDesktopLink(c, info) {
+  c.append(h("h3", null, "Ссылка для десктопа"));
+  if (!S.desktopInviteRequested) {
+    S.desktopInviteRequested = true;
+    send("desktop-invite");
+  }
+  const di = S.desktopInvite;
+  if (!di) {
+    c.append(h("p.muted", null, "Загрузка…"));
+    return;
+  }
+  c.append(
+    h(
+      "p.muted.small",
+      null,
+      "Для приложения ZALUPA228 для Windows (глобальные клавиши, трей). Человек вставляет эту строку при первом запуске — " +
+        "в ней адрес, отпечаток сертификата сервера и ключ, так что приложение не спутает сервер с чужим."
+    )
+  );
+  let host = location.host;
+  if (location.protocol !== "https:") {
+    if (!di.httpsPort) {
+      c.append(h("p.info-box", { style: { borderLeftColor: "var(--danger)" } }, "Сервер работает без HTTPS — приложение к нему не подключится."));
+      return;
+    }
+    host = location.hostname + ":" + di.httpsPort;
+  }
+  const opts = info.invites.map((inv) => [inv.code, inv.label || "Без названия"]);
+  if (!info.required) opts.unshift(["", "Без ключа (сервер открыт)"]);
+  if (!opts.length) {
+    c.append(h("p.muted", null, "Сначала создайте ключ-приглашение выше."));
+    return;
+  }
+  if (!opts.some(([v]) => v === S.desktopCode)) S.desktopCode = opts[0][0];
+  const out = h("input.input", { readonly: true, style: { flex: "1 1 320px", height: "30px", fontSize: "13px" }, onclick: (e) => e.target.select() });
+  const build = () => {
+    const q = new URLSearchParams();
+    if (di.spki) q.set("fp", di.spki);
+    if (S.desktopCode) q.set("k", S.desktopCode);
+    if (di.name) q.set("n", di.name);
+    out.value = `z228://${host}/?${q}`;
+  };
+  build();
+  const sel = select(opts, S.desktopCode, (v) => {
+    S.desktopCode = v;
+    build();
+  });
+  sel.style.maxWidth = "220px";
+  c.append(
+    h(
+      "div",
+      { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", maxWidth: "760px" } },
+      sel,
+      out,
+      h("button.btn.btn-sm.btn-primary", { onclick: () => copyText(out.value) }, "Копировать")
+    )
+  );
+  if (["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) {
+    c.append(h("p.muted.small", { style: { marginTop: "8px" } }, "⚠ Адрес localhost подойдёт только для этого ПК. Для друзей откройте админку по внешнему адресу или Radmin-IP."));
+  }
 }
 
 function settingsDonate(c) {
@@ -2934,11 +3162,12 @@ function bindUi() {
       else if ($("#layer").children.length) closeLayer();
       else if (settingsEl && !document.querySelector(".modal-backdrop")) closeSettings();
     }
-    if (e.ctrlKey && e.shiftKey && e.code === "KeyM") {
+    // в приложении с назначенной глобальной клавишей мьют/оглушение переключает приложение — иначе сработает дважды
+    if (e.ctrlKey && e.shiftKey && e.code === "KeyM" && !desktopBinding("mute")) {
       e.preventDefault();
       toggleMute();
     }
-    if (e.ctrlKey && e.shiftKey && e.code === "KeyD") {
+    if (e.ctrlKey && e.shiftKey && e.code === "KeyD" && !desktopBinding("deafen")) {
       e.preventDefault();
       toggleDeafen();
     }
@@ -2951,13 +3180,16 @@ function bindUi() {
         selectText(next.id);
       }
     }
-    // push-to-talk
+    // push-to-talk (в приложении рацию ведут глобальные клавиши — веб-обработчики молчат)
+    if (desktopPtt()) return;
     if (S.settings.pushToTalk && S.settings.pttKey && e.code === S.settings.pttKey && !e.repeat) voice.setPttHeld(true);
   });
   document.addEventListener("keyup", (e) => {
+    if (desktopPtt()) return;
     if (S.settings.pushToTalk && e.code === S.settings.pttKey) voice.setPttHeld(false);
   });
-  window.addEventListener("blur", () => voice.setPttHeld(false));
+  // в игре окно чата всегда без фокуса: десктопную рацию по blur не сбрасываем
+  window.addEventListener("blur", () => desktopPtt() || voice.setPttHeld(false));
 
   document.addEventListener("visibilitychange", () => {
     updateVideoSubscriptions();
@@ -3050,6 +3282,7 @@ window.addEventListener("beforeinstallprompt", (e) => {
 
 bindUi();
 applyTheme();
+initDesktop({ S, voice, toggleMute, toggleDeafen, sfx, saveSettings, toast });
 if (S.nick) {
   connect();
 } else {

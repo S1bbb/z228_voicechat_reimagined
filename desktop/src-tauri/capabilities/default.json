@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "connect",
+  "description": "Локальное окно первого входа (connect.html). Странице сервера права выдаются во время работы (bridge.rs).",
+  "windows": ["connect"],
+  "permissions": [
+    "core:default",
+    "allow-connect-status",
+    "allow-connect-submit",
+    "allow-connect-retry",
+    "allow-connect-quit"
+  ]
+}

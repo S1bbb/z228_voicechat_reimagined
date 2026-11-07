@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ZALUPA228 — подключение</title>
+    <style>
+      :root {
+        --bg: #1e1f22;
+        --card: #2b2d31;
+        --input: #1e1f22;
+        --text: #f2f3f5;
+        --muted: #b5bac1;
+        --brand: #22d3ee;
+        --brand-text: #0b1d22;
+        --danger: #f87171;
+        --warning: #fbbf24;
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.45 "Segoe UI", system-ui, sans-serif;
+        user-select: none;
+      }
+      main {
+        min-height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 28px;
+        gap: 16px;
+      }
+      .head {
+        text-align: center;
+      }
+      .head img {
+        width: 72px;
+        height: 72px;
+        border-radius: 20px;
+      }
+      .brand {
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        color: var(--brand);
+        margin-top: 8px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 6px 0 0;
+      }
+      p {
+        margin: 0;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      textarea,
+      input {
+        width: 100%;
+        background: var(--input);
+        color: var(--text);
+        border: 1px solid #3f4147;
+        border-radius: 6px;
+        padding: 10px 12px;
+        font: 13px/1.4 Consolas, "Cascadia Mono", monospace;
+        user-select: text;
+        resize: none;
+        outline: none;
+      }
+      textarea:focus,
+      input:focus {
+        border-color: var(--brand);
+      }
+      button {
+        height: 40px;
+        border: 0;
+        border-radius: 6px;
+        font: 600 14px "Segoe UI", system-ui, sans-serif;
+        cursor: pointer;
+        padding: 0 16px;
+        background: #4e5058;
+        color: var(--text);
+      }
+      button.primary {
+        background: var(--brand);
+        color: var(--brand-text);
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+      .row > button.primary {
+        flex: 1;
+      }
+      .error {
+        padding: 10px 12px;
+        border-radius: 6px;
+        background: rgba(248, 113, 113, 0.12);
+        border-left: 4px solid var(--danger);
+        font-size: 14px;
+        user-select: text;
+      }
+      .error.warn {
+        background: rgba(251, 191, 36, 0.1);
+        border-left-color: var(--warning);
+      }
+      details summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      details[open] summary {
+        margin-bottom: 8px;
+      }
+      .check {
+        flex-direction: row;
+        align-items: center;
+        gap: 10px;
+        margin-top: 14px;
+        font-size: 14px;
+        font-weight: 400;
+        text-transform: none;
+        color: var(--text);
+        cursor: pointer;
+      }
+      .check input {
+        width: 18px;
+        height: 18px;
+        margin: 0;
+        accent-color: var(--brand);
+        cursor: pointer;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      .version {
+        text-align: center;
+        font-size: 12px;
+        color: #80848e;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="head">
+        <img src="logo.png" alt="" />
+        <div class="brand">ZALUPA228</div>
+        <h1 id="title">Подключение к серверу</h1>
+        <p class="muted" id="subtitle">Вставьте строку-приглашение от администратора сервера.</p>
+      </div>
+
+      <div class="error" id="error" hidden></div>
+      <div class="row" id="retryRow" hidden>
+        <button class="primary" id="retry">Повторить</button>
+      </div>
+
+      <form id="form" autocomplete="off">
+        <label>
+          Строка-приглашение
+          <textarea id="invite" rows="4" spellcheck="false" placeholder="z228://адрес:порт/?fp=…&amp;k=…"></textarea>
+        </label>
+        <details id="extra" style="margin-top: 12px">
+          <summary>Есть только ссылка https://…? Укажите отпечаток</summary>
+          <label>
+            Отпечаток сертификата (fp)
+            <input id="fp" spellcheck="false" placeholder="43 символа из «Администрирования» → «Ссылка для десктопа»" />
+          </label>
+          <p class="muted" style="margin-top: 6px">Без отпечатка подключение возможно, только если у сервера настоящий сертификат (Let's Encrypt).</p>
+        </details>
+        <label class="check" id="shortcutRow" hidden>
+          <input type="checkbox" id="shortcut" />
+          Создать ярлык на рабочем столе
+        </label>
+        <div class="row" style="margin-top: 16px">
+          <button type="button" id="quit">Выход</button>
+          <button class="primary" type="submit" id="go">Подключиться</button>
+        </div>
+      </form>
+      <p class="muted">Строку для приложения админ берёт в «Настройки → Администрирование → Ссылка для десктопа».</p>
+      <div class="version" id="version"></div>
+    </main>
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      const $ = (id) => document.getElementById(id);
+      let retryTimer = 0;
+      let shortcutTouched = false;
+
+      function showError(text, warn) {
+        $("error").hidden = !text;
+        $("error").textContent = text || "";
+        $("error").classList.toggle("warn", !!warn);
+      }
+
+      window.loadStatus = async function () {
+        const st = await invoke("connect_status");
+        $("version").textContent = "ZALUPA228 Desktop " + st.version;
+        $("quit").textContent = st.hasMain && !st.error ? "Отмена" : "Выход";
+        if (st.server) {
+          $("title").textContent = st.error ? st.name || st.server : "Сменить сервер";
+          $("subtitle").textContent = st.error ? st.server : "Сейчас: " + (st.name ? st.name + " · " : "") + st.server;
+        }
+        $("shortcutRow").hidden = !st.shortcut;
+        if (st.shortcut && !shortcutTouched) $("shortcut").checked = st.shortcutDefault;
+        showError(st.error, st.retry);
+        $("retryRow").hidden = !st.retry;
+        clearInterval(retryTimer);
+        // сервер просто недоступен — пробуем сами, пока окно открыто
+        if (st.retry) retryTimer = setInterval(() => retry(true), 15000);
+        if (!st.error) setTimeout(() => $("invite").focus());
+      };
+
+      async function retry(silent) {
+        $("retry").disabled = true;
+        if (!silent) $("retry").textContent = "Подключаюсь…";
+        try {
+          await invoke("connect_retry");
+        } catch (e) {
+          if (!silent) showError(String(e), true);
+        }
+        $("retry").disabled = false;
+        $("retry").textContent = "Повторить";
+      }
+      $("retry").onclick = () => retry(false);
+      $("shortcut").onchange = () => (shortcutTouched = true);
+
+      $("invite").addEventListener("input", () => {
+        if (/^\s*https:\/\//i.test($("invite").value)) $("extra").open = true;
+      });
+      $("invite").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          $("form").requestSubmit();
+        }
+      });
+
+      $("form").onsubmit = async (e) => {
+        e.preventDefault();
+        $("go").disabled = true;
+        $("go").textContent = "Проверяю сервер…";
+        showError("");
+        try {
+          const shortcut = $("shortcutRow").hidden ? null : $("shortcut").checked;
+          await invoke("connect_submit", { invite: $("invite").value, fp: $("fp").value, shortcut });
+        } catch (err) {
+          showError(String(err));
+          $("go").disabled = false;
+          $("go").textContent = "Подключиться";
+        }
+      };
+      $("quit").onclick = () => invoke("connect_quit");
+
+      document.addEventListener("contextmenu", (e) => {
+        if (!e.target.closest("textarea, input")) e.preventDefault();
+      });
+      loadStatus();
+    </script>
+  </body>
+</html>

@@ -2325,3 +2325,23 @@ body.dragging-user .channel {
   box-shadow: inset 0 0 0 2px var(--brand);
   color: var(--interactive-active);
 }
+
+/* ---------- десктоп-приложение ---------- */
+
+.desktop-update {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--bg-floating, var(--bg-tertiary));
+  border-left: 4px solid var(--brand);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+}

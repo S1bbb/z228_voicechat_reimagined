@@ -39,6 +39,7 @@ type Options struct {
 	UploadDir      string
 	MaxUploadBytes int64
 	DataDir        string // для резервных копий
+	HTTPSPort      int    // для строки-приглашения десктопа, если админка открыта по HTTP
 }
 
 type Hub struct {
@@ -49,6 +50,14 @@ type Hub struct {
 	byNick   map[string]*session // по нику в нижнем регистре
 	mutedBy  map[string]bool     // ники, заглушённые админом (до перезапуска сервера)
 	guard    *guard              // защита от перебора ключа и пароля админа
+	certSPKI string              // отпечаток ключа TLS-сертификата для десктоп-приложения ("" — не нужен)
+}
+
+// SetCertSPKI задаёт отпечаток SPKI сертификата сервера (вызывается до приёма соединений).
+func (h *Hub) SetCertSPKI(pin string) {
+	h.mu.Lock()
+	h.certSPKI = pin
+	h.mu.Unlock()
 }
 
 func NewHub(opts Options) *Hub {
@@ -746,12 +755,20 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		h.broadcastPresence()
 
 	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute", "move-voice",
-		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign", "backup-download":
+		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign", "backup-download", "desktop-invite":
 		h.mu.Lock()
 		admin := s.admin
 		h.mu.Unlock()
 		if !admin {
 			s.sendError("Нужны права администратора.")
+			return
+		}
+		if m.Type == "desktop-invite" {
+			// данные для строки-приглашения десктопа: z228://host:port/?fp=…&k=…&n=…
+			h.mu.Lock()
+			pin := h.certSPKI
+			h.mu.Unlock()
+			s.send("desktop-invite", map[string]any{"code": strings.TrimSpace(m.Text), "spki": pin, "name": h.opts.ServerName, "httpsPort": h.opts.HTTPSPort})
 			return
 		}
 		if m.Type == "backup-download" {

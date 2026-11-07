@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-change-server"
+description = "Enables the desktop_change_server command without any pre-configured scope."
+commands.allow = ["desktop_change_server"]
+
+[[permission]]
+identifier = "deny-desktop-change-server"
+description = "Denies the desktop_change_server command without any pre-configured scope."
+commands.deny = ["desktop_change_server"]

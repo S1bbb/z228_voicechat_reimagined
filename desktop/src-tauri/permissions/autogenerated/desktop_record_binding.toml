@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-record-binding"
+description = "Enables the desktop_record_binding command without any pre-configured scope."
+commands.allow = ["desktop_record_binding"]
+
+[[permission]]
+identifier = "deny-desktop-record-binding"
+description = "Denies the desktop_record_binding command without any pre-configured scope."
+commands.deny = ["desktop_record_binding"]

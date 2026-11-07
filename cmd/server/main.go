@@ -4,6 +4,8 @@ import (
 	"context"
 	crand "crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -115,6 +117,7 @@ func main() {
 		UploadDir:      uploadDir,
 		DataDir:        cfg.DataDir,
 		MaxUploadBytes: int64(cfg.MaxUploadMB) << 20,
+		HTTPSPort:      cfg.HTTPSPort,
 	})
 
 	app.StartBackups(st, filepath.Join(cfg.DataDir, "backups"), 7)
@@ -123,6 +126,12 @@ func main() {
 	mux.HandleFunc("/ws", hub.ServeWS)
 	mux.HandleFunc("/api/upload", hub.HandleUpload)
 	mux.HandleFunc("/api/backup", hub.HandleBackup)
+	mux.HandleFunc("/api/info", func(w http.ResponseWriter, r *http.Request) {
+		// без авторизации: по этому ответу десктоп-приложение узнаёт, что по адресу именно z228
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]string{"app": "z228", "name": cfg.ServerName, "version": version})
+	})
 	mux.Handle("/uploads/", hub.UploadsHandler())
 	mux.Handle("/", staticHandler(cfg.WebDir))
 
@@ -167,6 +176,13 @@ func main() {
 		}
 		tlsConf = &tls.Config{Certificates: []tls.Certificate{c}}
 		httpHandler = redirectToHTTPS(cfg.HTTPSPort, mux)
+	}
+
+	// отпечаток ключа сертификата — для ссылки-приглашения десктоп-приложения (у Let's Encrypt он не нужен)
+	if tlsConf != nil && len(tlsConf.Certificates) > 0 && len(tlsConf.Certificates[0].Certificate) > 0 {
+		if leaf, err := x509.ParseCertificate(tlsConf.Certificates[0].Certificate[0]); err == nil {
+			hub.SetCertSPKI(cert.SPKIPin(leaf))
+		}
 	}
 
 	httpSrv := &http.Server{Addr: net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.Port)), Handler: httpHandler, ReadHeaderTimeout: 10 * time.Second}

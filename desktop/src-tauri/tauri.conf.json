@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ZALUPA228",
+  "version": "0.1.0",
+  "identifier": "ru.zalupa228.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "publisher": "ZALUPA228",
+    "shortDescription": "ZALUPA228 — голосовой чат",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Russian", "English"],
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcyQTEwQ0E3Mjc0NDNCM0IKUldRN08wUW5wd3loY2djNTVORFVON3hsMG5FeHY4ZmJxbmF2YitGa2R3Q2RleVJPNVViVHVPeDYK",
+      "endpoints": ["https://github.com/S1bbb/z228_voicechat_reimagined/releases/latest/download/latest.json"],
+      "windows": {
+        "installMode": "quiet"
+      }
+    }
+  }
+}
