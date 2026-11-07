@@ -64,6 +64,7 @@ const S = {
   focusTile: "",
   prevVoiceMembers: null,
   avatars: {}, // ник в нижнем регистре -> url
+  watching: new Set(), // чьи трансляции экрана смотрим (по кнопке «Смотреть»)
   quality: {}, // id участника -> {rtt, loss, jitter}
   myStats: null, // подробная статистика своего соединения
 };
@@ -358,6 +359,7 @@ function onPresence(users) {
   const mine = myVoiceChannel();
   const prevOf = S.prevVoiceOf;
   S.prevVoiceOf = new Map(users.map((u) => [u.id, u.voiceChannelId || 0]));
+  queueMicrotask(updateVideoSubscriptions);
   // первые секунды после подключения молчим: при перезапуске сервера все переподключаются разом
   if (prevOf && S.settings.voicePing && Date.now() - (S.readyAt || 0) > 8000) {
     const joined = users.some(
@@ -666,6 +668,38 @@ function renderAll() {
   $("#stageView").hidden = S.view !== "voice";
   renderStage();
   renderComposerState();
+  updateVideoSubscriptions();
+}
+
+// ---------- какое видео нам слать ----------
+// Сервер пересылает видео только по подписке: камеры — когда открыт экран нашего голосового канала,
+// трансляции — только после «Смотреть». Пока вкладка свёрнута (например, вы в игре), видео не приходит
+// совсем: так браузер не тратит процессор и сеть на декодирование того, что никто не видит.
+let lastVideoSubs = "";
+
+function updateVideoSubscriptions() {
+  if (!voice.active || !voice.joinId || !S.me) {
+    lastVideoSubs = "";
+    return;
+  }
+  for (const id of [...S.watching]) {
+    const u = userById(id);
+    if (!u || !u.screen || u.voiceChannelId !== voice.channelId) S.watching.delete(id);
+  }
+  const keys = [];
+  const visible = S.view === "voice" && S.stageVoiceId === voice.channelId && !document.hidden;
+  if (visible) {
+    for (const u of voiceMembers(voice.channelId)) {
+      if (u.id === S.me.id) continue;
+      if (u.camera) keys.push(u.id + "/camera");
+      if (u.screen && S.watching.has(u.id)) keys.push(u.id + "/screen");
+    }
+  }
+  keys.sort();
+  const sig = voice.joinId + "|" + keys.join(",");
+  if (sig === lastVideoSubs) return;
+  lastVideoSubs = sig;
+  send("video-subscribe", { keys, joinId: voice.joinId });
 }
 
 const DRAG_TYPE = "text/z228-user";
@@ -1566,10 +1600,27 @@ function renderStage() {
   for (const u of members) {
     const isMe = u.id === S.me.id;
     if (u.screen) {
-      const stream = isMe ? voice.screenStream : voice.remoteVideo(u.id);
+      const watching = isMe || S.watching.has(u.id);
+      const stream = isMe ? voice.screenStream : watching ? voice.remoteVideo(u.id) : null;
       const key = "screen:" + u.id;
-      const tile = h("div.tile" + (S.focusTile === key ? ".focused" : ""), { dataset: { key }, onclick: () => toggleFocus(key) });
-      if (stream) tile.append(videoFor(key, stream));
+      const tile = h("div.tile" + (S.focusTile === key ? ".focused" : ""), { dataset: { key }, onclick: () => watching && toggleFocus(key) });
+      if (!watching) {
+        // как в Discord: чужую трансляцию принимаем только по кнопке — не грузим процессор зря
+        tile.append(
+          h(
+            "div.tile-watch",
+            null,
+            h("button.btn.btn-primary", {
+              onclick: (e) => {
+                e.stopPropagation();
+                S.watching.add(u.id);
+                renderStage();
+                updateVideoSubscriptions();
+              },
+            }, "Смотреть трансляцию")
+          )
+        );
+      } else if (stream) tile.append(videoFor(key, stream));
       else tile.append(h("div.muted", null, "Подключение к трансляции…"));
       tile.append(
         h("div.tile-label", null, h("span.live-badge", null, "В ЭФИРЕ"), h("span", null, isMe ? "Ваш экран" : u.nickname)),
@@ -1584,7 +1635,20 @@ function renderStage() {
               const v = tile.querySelector("video");
               (v || tile).requestFullscreen?.();
             },
-          })
+          }),
+          !isMe && watching
+            ? h("button.icon-btn", {
+                html: icon("close", 18),
+                title: "Перестать смотреть",
+                onclick: (e) => {
+                  e.stopPropagation();
+                  S.watching.delete(u.id);
+                  if (S.focusTile === key) S.focusTile = "";
+                  renderStage();
+                  updateVideoSubscriptions();
+                },
+              })
+            : null
         )
       );
       tiles.push(tile);
@@ -2877,6 +2941,7 @@ function bindUi() {
   window.addEventListener("blur", () => voice.setPttHeld(false));
 
   document.addEventListener("visibilitychange", () => {
+    updateVideoSubscriptions();
     if (!document.hidden && S.view === "text" && isAtBottom(40)) markRead(S.textId);
   });
 

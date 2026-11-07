@@ -109,6 +109,7 @@ type Peer struct {
 	offering   bool // ждём answer на наш offer
 	needOffer  bool // во время ожидания что-то поменялось — нужен ещё один раунд
 	senders    map[string]*webrtc.RTPSender
+	wantVideo  map[string]bool // какие видеотреки участник сейчас смотрит (ключ "<id>/screen|camera")
 	pendingICE []webrtc.ICECandidateInit
 	onClosed   func()
 }
@@ -286,7 +287,7 @@ func (r *room) syncPeerLocked(p *Peer) {
 	}
 	changed := false
 	for key, sender := range p.senders {
-		if t, ok := r.tracks[key]; !ok || sender.Track() != t.local {
+		if t, ok := r.tracks[key]; !ok || sender.Track() != t.local || !p.wantsLocked(t) {
 			_ = p.pc.RemoveTrack(sender)
 			delete(p.senders, key)
 			changed = true
@@ -296,7 +297,7 @@ func (r *room) syncPeerLocked(p *Peer) {
 		if t.owner == p {
 			continue
 		}
-		if _, ok := p.senders[key]; ok {
+		if _, ok := p.senders[key]; ok || !p.wantsLocked(t) {
 			continue
 		}
 		sender, err := p.pc.AddTrack(t.local)
@@ -307,6 +308,13 @@ func (r *room) syncPeerLocked(p *Peer) {
 		p.senders[key] = sender
 		changed = true
 		go forwardRTCP(sender, t)
+		if t.remote.Kind() == webrtc.RTPCodecTypeVideo {
+			// новому зрителю нужен ключевой кадр, иначе картинка появится только со следующим
+			go func(t *pubTrack) {
+				time.Sleep(500 * time.Millisecond)
+				t.owner.requestKeyframe(t.remote)
+			}(t)
+		}
 	}
 	p.mu.Unlock()
 	if changed {
@@ -377,6 +385,34 @@ func (p *Peer) negotiate() {
 
 // SetServerMuted включает/выключает серверное заглушение микрофона участника.
 func (p *Peer) SetServerMuted(v bool) { p.serverMuted.Store(v) }
+
+// wantsLocked — пересылать ли участнику этот трек. Звук — всегда; видео (экран, камеру) — только
+// то, что он сейчас смотрит: иначе браузер принимал бы и декодировал чужие трансляции впустую,
+// а это заметно грузит процессор и сеть. Вызывать под p.mu.
+func (p *Peer) wantsLocked(t *pubTrack) bool {
+	if t.remote.Kind() != webrtc.RTPCodecTypeVideo {
+		return true
+	}
+	return p.wantVideo[t.key]
+}
+
+// SetWantedVideo задаёт, какие видеотреки участник смотрит (ключи "<id участника>/screen|camera").
+func (p *Peer) SetWantedVideo(keys []string) {
+	want := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		if len(want) >= 32 {
+			break
+		}
+		want[k] = true
+	}
+	r := p.room
+	r.mu.Lock()
+	p.mu.Lock()
+	p.wantVideo = want
+	p.mu.Unlock()
+	r.syncPeerLocked(p)
+	r.mu.Unlock()
+}
 
 // HandleAnswer — ответ клиента на наш offer.
 func (p *Peer) HandleAnswer(sdp string) error {

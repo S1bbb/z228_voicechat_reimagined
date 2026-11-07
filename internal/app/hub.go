@@ -108,6 +108,7 @@ type inMsg struct {
 	Dir         int                      `json:"dir"`
 	SessionID   string                   `json:"sessionId"`
 	JoinID      string                   `json:"joinId"`
+	Keys        []string                 `json:"keys"`
 	Rtt         *float64                 `json:"rtt"`
 	Loss        *float64                 `json:"loss"`
 	Jitter      *float64                 `json:"jitter"`
@@ -678,6 +679,18 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		}
 		h.mu.Unlock()
 		h.broadcastPresence()
+
+	case "video-subscribe":
+		// какие трансляции/камеры клиент сейчас показывает — остальное видео ему не шлём
+		h.mu.Lock()
+		peer := s.peer
+		if m.JoinID != s.joinID {
+			peer = nil
+		}
+		h.mu.Unlock()
+		if peer != nil {
+			peer.SetWantedVideo(m.Keys)
+		}
 
 	case "rtc-answer":
 		h.mu.Lock()
