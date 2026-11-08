@@ -1,6 +1,7 @@
 // Обработка микрофона перед отправкой: шумодав RNNoise (нейросеть, как в Jitsi/OBS) и шумовой гейт.
 // Всё работает в AudioWorklet на 48 кГц; файлы лежат у нас (/vendor/noise-suppressor, /js/gate-worklet.js).
 import { RnnoiseWorkletNode, loadRnnoise } from "../vendor/noise-suppressor/index.js";
+import { applyVoiceFilter, needsFilter } from "./voicefx.js";
 
 const BASE = "/vendor/noise-suppressor/";
 let wasmPromise = null;
@@ -20,8 +21,8 @@ export function noiseSuppressionSupported() {
 }
 
 /**
- * Цепочка: микрофон → [RNNoise] → [гейт] → поток для отправки.
- * opts: {rnnoise, gate, thresholdDb, monitor}. Гейт ставится и при monitor (для индикатора в настройках);
+ * Цепочка: микрофон → [RNNoise] → [гейт] → [фильтр голоса] → поток для отправки.
+ * opts: {rnnoise, gate, thresholdDb, monitor, filter}. Гейт ставится и при monitor (для индикатора в настройках);
  * если сам гейт выключен, он всегда открыт и только меряет уровень.
  * Возвращает {stream, track, close(), setThreshold(db), onLevel(cb), measure(ms)}.
  */
@@ -51,6 +52,12 @@ export async function buildMicChain(rawStream, opts = {}) {
       });
       nodes.push(gateNode);
       tail = tail.connect(gateNode);
+    }
+    if (needsFilter(opts.filter)) {
+      // фильтр — последним: шумодав и гейт работают с настоящим голосом
+      const fx = await applyVoiceFilter(ctx, tail, opts.filter);
+      nodes.push(...fx.nodes);
+      tail = fx.output;
     }
     const dest = ctx.createMediaStreamDestination();
     dest.channelCount = 1;
@@ -98,6 +105,7 @@ export async function buildMicChain(rawStream, opts = {}) {
             n.disconnect();
           } catch {}
           if (n.destroy) n.destroy();
+        if (n.stop && n instanceof OscillatorNode) n.stop();
         }
         track.stop();
         ctx.close().catch(() => {});

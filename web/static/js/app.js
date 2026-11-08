@@ -1,6 +1,7 @@
 import { $, $$, h, avatar, avatarColor, setAvatarSource, lsGet, lsSet, randomId, renderMarkdown, mentionsMe, isEmojiOnly, fmtTime, fmtFull, fmtStamp, fmtDay, sameDay, fmtSize } from "./util.js";
 import { icon } from "./icons.js";
-import { Voice, micTest, sfx, unlockSfx, setSfxOutput, rtcConstructor, rtcDiagnostics, qualityLevel } from "./voice.js";
+import { Voice, micTest, voicePreview, sfx, unlockSfx, setSfxOutput, rtcConstructor, rtcDiagnostics, qualityLevel } from "./voice.js";
+import { VOICE_FILTERS } from "./voicefx.js";
 import { isDesktop, initDesktop, desktopInfo, desktopPtt, desktopBinding, refreshInfo as refreshDesktopInfo, invoke as desktopInvoke, stateChanged as desktopStateChanged } from "./desktop.js";
 import { EMOJI_GROUPS, QUICK_REACTIONS } from "./emoji.js";
 import { maybeShowWhatsNew } from "./whatsnew.js";
@@ -17,6 +18,7 @@ const DEFAULT_SETTINGS = {
   noiseSuppression: true,
   autoGainControl: true,
   rnnoise: false,
+  voiceFilter: "none",
   gate: false,
   gateDb: -50,
   pushToTalk: false,
@@ -2782,6 +2784,7 @@ function deleteChannelDialog(ch) {
 let settingsSection = "voice";
 let settingsEl = null;
 let stopMicTest = null;
+let stopPreview = null; // «Послушать себя» с фильтром голоса
 
 function openSettings(section = "voice") {
   closeLayer();
@@ -2800,6 +2803,8 @@ function closeSettings() {
   S.desktopInviteRequested = false;
   if (stopMicTest) stopMicTest.stop();
   stopMicTest = null;
+  if (stopPreview) stopPreview.stop();
+  stopPreview = null;
   if (settingsEl) settingsEl.remove();
   settingsEl = null;
 }
@@ -2855,6 +2860,10 @@ function renderSettings() {
   if (stopMicTest) {
     stopMicTest.stop();
     stopMicTest = null;
+  }
+  if (stopPreview) {
+    stopPreview.stop();
+    stopPreview = null;
   }
   settingsEl.innerHTML = "";
   const navBtn = (id, label, cls = "") =>
@@ -3133,6 +3142,68 @@ async function settingsVoice(c) {
     ...(s.gate ? [gateControls()] : []),
     toggleRow("Эхоподавление", "Нужно, если вы без наушников.", s.echoCancellation, (v) => ((s.echoCancellation = v), restart())),
     toggleRow("Автоматическая регулировка усиления", null, s.autoGainControl, (v) => ((s.autoGainControl = v), restart()))
+  );
+
+  // ---- фильтр голоса ----
+  c.append(
+    h("h3", null, "Фильтр голоса"),
+    h("p.muted.small", { style: { marginTop: "-4px" } }, "Меняет голос для всех в звонке. Считается на вашем компьютере, на сервер не влияет. «Бурундук» и «Демон» запаздывают примерно на 20 мс.")
+  );
+  const fxGrid = h("div.fx-grid");
+  const drawFx = () => {
+    fxGrid.innerHTML = "";
+    for (const [id, label, emoji] of VOICE_FILTERS)
+      fxGrid.append(
+        h(
+          "button.fx-card" + ((s.voiceFilter || "none") === id ? ".sel" : ""),
+          {
+            onclick: async () => {
+              if ((s.voiceFilter || "none") === id) return;
+              s.voiceFilter = id;
+              saveSettings();
+              voice.restartMic();
+              drawFx();
+              if (stopPreview) {
+                stopPreview.stop();
+                stopPreview = null;
+                await startPreview();
+              }
+            },
+          },
+          h("span.fx-emoji", null, emoji),
+          h("span", null, label)
+        )
+      );
+  };
+  drawFx();
+  const prevBtn = h("button.btn", null, "Послушать себя");
+  const startPreview = async () => {
+    stopPreview = await voicePreview({ ...voice.micConstraints(), echoCancellation: true }, { rnnoise: s.rnnoise, filter: s.voiceFilter }, s.outputDevice);
+    prevBtn.textContent = "Хватит";
+    prevBtn.classList.add("btn-primary");
+  };
+  prevBtn.onclick = async () => {
+    if (stopPreview) {
+      stopPreview.stop();
+      stopPreview = null;
+      prevBtn.textContent = "Послушать себя";
+      prevBtn.classList.remove("btn-primary");
+      return;
+    }
+    try {
+      await startPreview();
+    } catch (e) {
+      toast("Не удалось включить микрофон: " + e.message, "error");
+    }
+  };
+  c.append(
+    fxGrid,
+    h(
+      "div",
+      { style: { display: "flex", gap: "12px", alignItems: "center", marginTop: "10px", flexWrap: "wrap" } },
+      prevBtn,
+      h("span.muted.small", null, "Лучше в наушниках — иначе микрофон поймает сам себя.")
+    )
   );
 
   c.append(h("h3", null, "Демонстрация экрана"));

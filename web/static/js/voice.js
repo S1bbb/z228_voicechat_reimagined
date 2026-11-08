@@ -1,4 +1,5 @@
 import { buildMicChain, noiseSuppressionSupported } from "./noise.js";
+import { needsFilter } from "./voicefx.js";
 
 // Голос: одно RTCPeerConnection с сервером (SFU), микрофон, демонстрация экрана,
 // воспроизведение собеседников, громкость по людям и индикация речи.
@@ -180,17 +181,17 @@ export class Voice {
     if (this.hooks.onMic) this.hooks.onMic(true);
   }
 
-  /** Сырой поток микрофона -> то, что отправляем (через RNNoise и/или гейт, если включены). */
+  /** Сырой поток микрофона -> то, что отправляем (через RNNoise, гейт и фильтр голоса, если включены). */
   async processMic(raw) {
     const s = this.settings;
     const plain = { raw, stream: raw, track: raw.getAudioTracks()[0] || null, close: null, chain: null };
-    if ((!s.rnnoise && !s.gate) || !noiseSuppressionSupported()) return plain;
+    if ((!s.rnnoise && !s.gate && !needsFilter(s.voiceFilter)) || !noiseSuppressionSupported()) return plain;
     try {
-      const chain = await buildMicChain(raw, { rnnoise: s.rnnoise, gate: s.gate, thresholdDb: s.gateDb });
+      const chain = await buildMicChain(raw, { rnnoise: s.rnnoise, gate: s.gate, thresholdDb: s.gateDb, filter: s.voiceFilter });
       return { raw, stream: chain.stream, track: chain.track, close: chain.close, chain };
     } catch (e) {
       console.warn("mic chain", e);
-      this.hooks.onError("Шумодав/гейт не запустились в этом браузере — голос идёт без обработки.");
+      this.hooks.onError("Обработка голоса (шумодав, гейт, фильтр) не запустилась в этом браузере — голос идёт как есть.");
       return plain;
     }
   }
@@ -736,6 +737,33 @@ export class Voice {
  * onLevel({db, open}) — уровень после шумодава (до гейта) и состояние гейта.
  * Возвращает {stop(), setThreshold(db), measure(ms)}.
  */
+/**
+ * «Послушать себя»: микрофон → та же обработка, что уйдёт в звонок → в наушники.
+ * Возвращает {stop()}.
+ */
+export async function voicePreview(constraints, opts, sinkId) {
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  let chain;
+  try {
+    chain = await buildMicChain(stream, { rnnoise: opts.rnnoise, filter: opts.filter });
+  } catch (e) {
+    stream.getTracks().forEach((t) => t.stop());
+    throw e;
+  }
+  const el = new Audio();
+  el.srcObject = chain.stream;
+  if (sinkId && el.setSinkId) await el.setSinkId(sinkId).catch(() => {});
+  await el.play().catch(() => {});
+  return {
+    stop() {
+      el.pause();
+      el.srcObject = null;
+      chain.close();
+      stream.getTracks().forEach((t) => t.stop());
+    },
+  };
+}
+
 export async function micTest(constraints, onLevel, opts = {}) {
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
   let chain = null;
