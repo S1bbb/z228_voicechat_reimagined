@@ -323,13 +323,13 @@ function onMessage(m) {
         lsSet("z228.adminToken", "");
       }
       renderAll();
-      if (settingsSection === "admin") renderSettings();
+      renderSettings(); // меню настроек зависит от прав
       return;
     case "roles":
       S.roles = m.roles || [];
       S.userRoles = m.userRoles || {};
       renderMembers();
-      if (settingsSection === "admin") renderSettings();
+      if (isAdminSection()) renderSettings();
       return;
     case "avatar":
       if (m.url) S.avatars[m.nickname] = m.url;
@@ -340,7 +340,7 @@ function onMessage(m) {
       return;
     case "invites":
       S.invites = m;
-      if (settingsSection === "admin") renderSettings();
+      if (isAdminSection()) renderSettings();
       return;
     case "dms":
       onDms(m.dms || []);
@@ -361,16 +361,16 @@ function onMessage(m) {
       return;
     case "bans":
       S.bans = m.bans || [];
-      if (settingsSection === "admin") renderSettings();
+      if (isAdminSection()) renderSettings();
       return;
     case "ai-settings":
       S.aiSettings = m;
-      if (settingsSection === "admin") renderSettings();
+      if (isAdminSection()) renderSettings();
       return;
     case "desktop-invite":
       S.desktopInvite = m;
       if (S.onDesktopInvite) S.onDesktopInvite(m);
-      if (settingsSection === "admin") renderSettings();
+      if (isAdminSection()) renderSettings();
       return;
     case "pong":
       S.ping = Math.round(performance.now() - m.t);
@@ -2322,8 +2322,10 @@ function renderSettings() {
       navBtn("notify", "Уведомления"),
       navBtn("keys", "Горячие клавиши"),
       isDesktop ? navBtn("app", "Приложение") : null,
-      h("div.category", null, "Сервер"),
-      navBtn("admin", "Администрирование"),
+      h("div.category", null, canManage() ? "Администрирование" : "Сервер"),
+      ...(canManage() ? adminTabs().map(([id, label]) => navBtn(id, label)) : [navBtn("admin", "Войти как админ")]),
+      S.admin ? h("button", { onclick: () => send("admin-logout") }, "Выйти из админки") : null,
+      h("div.category", null, "Прочее"),
       navBtn("donate", "Поддержать"),
       h("div.menu-sep"),
       h("button.danger", { onclick: logout }, "Выйти")
@@ -2337,7 +2339,16 @@ function renderSettings() {
     h("div.settings-close", null, h("button.icon-btn", { html: icon("close", 18), onclick: closeSettings }), "ESC")
   );
   settingsEl.append(nav, wrap);
-  ({ profile: settingsProfile, voice: settingsVoice, look: settingsLook, notify: settingsNotify, keys: settingsKeys, app: settingsApp, admin: settingsAdmin, donate: settingsDonate })[settingsSection](content);
+  if (isAdminSection() && canManage() && !adminTabs().some(([id]) => id === settingsSection)) settingsSection = firstAdminTab();
+  if (!canManage() && settingsSection.startsWith("adm-")) settingsSection = "admin";
+  const tab = adminTabs().find(([id]) => id === settingsSection);
+  const fn = tab
+    ? (c) => {
+        c.append(h("h2", null, tab[1]), tab[2] ? h("p.muted", { style: { marginTop: "-8px" } }, tab[2]) : null);
+        tab[3](c);
+      }
+    : { profile: settingsProfile, voice: settingsVoice, look: settingsLook, notify: settingsNotify, keys: settingsKeys, app: settingsApp, admin: settingsAdmin, donate: settingsDonate }[settingsSection];
+  fn(content);
   restoreDrafts(drafts);
 }
 
@@ -2864,50 +2875,60 @@ function settingsApp(c) {
   c.append(h("h3", null, "Версия"), h("div.toggle-row", null, h("div.t", null, `ZALUPA228 Desktop ${info.version}`), upd));
 }
 
-function settingsAdmin(c) {
-  c.append(h("h2", null, "Администрирование"));
-  if (!canManage()) {
-    const pw = h("input", { type: "password", placeholder: "Пароль администратора" });
-    const go = () => send("admin-login", { password: pw.value });
-    // не «e.key === "Enter" && go()»: false из onkeydown отменяет нажатие — в поле не печаталось ничего
-    pw.onkeydown = (e) => {
-      if (e.key === "Enter") go();
-    };
-    c.append(
-      h("p.muted", null, "Пароль администратора выводится в консоль сервера при первом запуске (или задаётся через ADMIN_PASSWORD / -admin-password)."),
-      h("div", { style: { display: "flex", gap: "8px", maxWidth: "420px" } }, pw, h("button.btn.btn-primary", { onclick: go }, "Войти"))
-    );
-    pw.classList.add("input");
-    setTimeout(() => pw.focus());
-    return;
-  }
-  if (!S.admin) {
-    const mine = myPerms().includes("admin") ? ["admin"] : myPerms();
-    c.append(h("p.muted", null, "Ваша роль даёт права: " + mine.map((p) => PERM_LABELS[p] || p).join(", ") + "."));
-  }
-  if (can("invites")) settingsAccess(c);
-  if (can("kick")) settingsBans(c);
-  if (can("admin")) {
-    settingsRoles(c);
-    settingsAI(c);
-  }
-  if (can("admin")) c.append(
-    h("h3", null, "Резервные копии"),
+const isAdminSection = () => settingsSection === "admin" || settingsSection.startsWith("adm-");
+
+// подразделы администрирования: [id, название, пояснение, отрисовка]; видны только при нужном праве
+function adminTabs() {
+  const tabs = [];
+  if (can("invites")) tabs.push(["adm-access", "Ключи доступа", "Ссылки-приглашения на сервер и строка для приложения.", settingsAccess]);
+  if (can("mute") || can("kick"))
+    tabs.push([
+      "adm-people",
+      "Участники и баны",
+      "Кто сейчас в сети и кто забанен.",
+      (c) => {
+        settingsOnline(c);
+        if (can("kick")) settingsBans(c);
+      },
+    ]);
+  if (can("admin")) tabs.push(["adm-roles", "Роли и права", "Цвет роли, её место в списке участников и что она разрешает.", settingsRoles]);
+  if (can("channels")) tabs.push(["adm-channels", "Каналы", "", settingsChannels]);
+  if (can("admin")) tabs.push(["adm-ai", "ИИ", "", settingsAI]);
+  if (can("admin")) tabs.push(["adm-backup", "Резервные копии", "", settingsBackup]);
+  return tabs;
+}
+
+const firstAdminTab = () => (adminTabs()[0] || ["admin"])[0];
+
+function settingsBackup(c) {
+  c.append(
     h(
-      "p.muted.small",
+      "p.muted",
       null,
       "Сервер сам раз в сутки копирует базу (чат, каналы, роли, ключи, аватарки) и хранит 7 последних копий у себя. " +
         "Скачайте полную копию к себе — она переживёт даже потерю VPS. В архиве база и все загруженные файлы."
     ),
-    h("button.btn", { onclick: () => send("backup-download") }, "Скачать резервную копию")
+    h("button.btn.btn-primary", { onclick: () => send("backup-download") }, "Скачать резервную копию")
   );
-  if (can("channels")) settingsChannels(c);
-  settingsOnline(c);
-  if (S.admin) c.append(h("div", { style: { marginTop: "24px" } }, h("button.btn", { onclick: () => send("admin-logout") }, "Выйти из режима администратора")));
+}
+
+function settingsAdmin(c) {
+  c.append(h("h2", null, "Вход для администратора"));
+  const pw = h("input", { type: "password", placeholder: "Пароль администратора" });
+  const go = () => send("admin-login", { password: pw.value });
+  // не «e.key === "Enter" && go()»: false из onkeydown отменяет нажатие — в поле не печаталось ничего
+  pw.onkeydown = (e) => {
+    if (e.key === "Enter") go();
+  };
+  c.append(
+    h("p.muted", null, "Пароль администратора задаётся на сервере (ADMIN_PASSWORD) или выводится в консоль при первом запуске."),
+    h("div", { style: { display: "flex", gap: "8px", maxWidth: "420px" } }, pw, h("button.btn.btn-primary", { onclick: go }, "Войти"))
+  );
+  pw.classList.add("input");
+  setTimeout(() => pw.focus());
 }
 
 function settingsChannels(c) {
-  c.append(h("h3", null, "Каналы"));
   const list = h("div.admin-list");
   for (const ch of S.channels) {
     list.append(
@@ -2993,7 +3014,6 @@ function settingsAI(c) {
   }
   const st = S.aiSettings || { configured: false, enabled: true };
   c.append(
-    h("h3", null, "ИИ (DeepSeek)"),
     h(
       "p.muted.small",
       null,
@@ -3046,7 +3066,7 @@ function permChips(perms, onChange) {
 }
 
 function settingsRoles(c) {
-  c.append(h("h3", null, "Роли"));
+
   const list = h("div.admin-list");
   for (const r of S.roles || []) {
     const count = Object.values(S.userRoles || {}).filter((id) => id === r.id).length;
@@ -3133,7 +3153,7 @@ function settingsAccess(c) {
     S.invitesRequested = true;
     send("invites");
   }
-  c.append(h("h3", null, "Доступ к серверу"));
+
   const info = S.invites;
   if (!info) {
     c.append(h("p.muted", null, "Загрузка…"));
@@ -3542,7 +3562,7 @@ function bindUi() {
     if (canManage()) {
       m.append(
         ...(can("channels") ? [menuItem("Создать канал", () => createChannelDialog("text"), { iconName: "plus" })] : []),
-        menuItem("Администрирование", () => openSettings("admin"), { iconName: "crown" }),
+        menuItem("Администрирование", () => openSettings(firstAdminTab()), { iconName: "crown" }),
         h("div.menu-sep")
       );
     } else {
