@@ -2869,7 +2869,10 @@ function settingsAdmin(c) {
   if (!canManage()) {
     const pw = h("input", { type: "password", placeholder: "Пароль администратора" });
     const go = () => send("admin-login", { password: pw.value });
-    pw.onkeydown = (e) => e.key === "Enter" && go();
+    // не «e.key === "Enter" && go()»: false из onkeydown отменяет нажатие — в поле не печаталось ничего
+    pw.onkeydown = (e) => {
+      if (e.key === "Enter") go();
+    };
     c.append(
       h("p.muted", null, "Пароль администратора выводится в консоль сервера при первом запуске (или задаётся через ADMIN_PASSWORD / -admin-password)."),
       h("div", { style: { display: "flex", gap: "8px", maxWidth: "420px" } }, pw, h("button.btn.btn-primary", { onclick: go }, "Войти"))
@@ -3080,7 +3083,9 @@ function settingsRoles(c) {
     send("role-create", { name: name.value, text: color.value, keys: S.newRolePerms });
     name.value = "";
   };
-  name.onkeydown = (e) => e.key === "Enter" && create();
+  name.onkeydown = (e) => {
+    if (e.key === "Enter") create();
+  };
   c.append(
     h("div", { style: { display: "flex", gap: "8px", marginTop: "12px", maxWidth: "560px", alignItems: "center" } }, color, name, h("button.btn.btn-primary", { onclick: create }, "Создать роль")),
     h("div", { style: { marginTop: "8px" } }, h("span.muted.small", null, "Права новой роли: "), permChips(S.newRolePerms, (p) => (S.newRolePerms = p))),
@@ -3196,7 +3201,9 @@ function settingsAccess(c) {
       onOk: go,
     });
   };
-  label.onkeydown = (e) => e.key === "Enter" && create();
+  label.onkeydown = (e) => {
+    if (e.key === "Enter") create();
+  };
   c.append(
     h("div", { style: { display: "flex", gap: "8px", marginTop: "12px", maxWidth: "760px", flexWrap: "wrap" } }, label, kindSel, ttlSel, h("button.btn.btn-primary", { onclick: create }, "Создать ключ")),
     h(
