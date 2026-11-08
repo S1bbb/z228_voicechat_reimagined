@@ -3,6 +3,7 @@ name = "z228-desktop"
 version = "0.1.0"
 description = "ZALUPA228 — десктоп-приложение голосового чата"
 edition = "2021"
+license = "MIT"
 rust-version = "1.85"
 publish = false
 

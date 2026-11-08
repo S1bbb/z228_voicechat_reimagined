@@ -147,3 +147,7 @@ go run ./tools/smoketest -url ws://127.0.0.1:3000/ws -admin <пароль> [-key
 
 Структура: `cmd/server` (CLI и HTTP), `internal/app` (WebSocket-протокол, загрузки), `internal/sfu` (голос),
 `internal/store` (SQLite), `internal/netinfo` (адреса, Radmin, внешний IP), `web/static` (фронтенд без сборки).
+
+## Лицензия
+
+[MIT](LICENSE). Сторонний код: шумодав `web/static/vendor/noise-suppressor` (@sapphi-red/web-noise-suppressor, MIT, см. его `LICENSE`).
