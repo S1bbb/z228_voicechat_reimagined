@@ -137,6 +137,7 @@ type inMsg struct {
 	T           float64                  `json:"t"`
 	MaxUses     int                      `json:"maxUses"` // ключ: сколько людей могут войти (1 — разовый)
 	TTL         int64                    `json:"ttl"`     // ключ: срок действия, секунды (0 — бессрочный)
+	Option      int                      `json:"option"`  // опрос: номер варианта
 	URL         string                   `json:"url"`     // ИИ для картинок: адрес OpenAI-совместимого API
 	Model       string                   `json:"model"`
 }
@@ -608,6 +609,7 @@ func (h *Hub) handle(s *session, m *inMsg) {
 			return
 		}
 		h.broadcastIn(dmMembers, "message", map[string]any{"message": msg, "nonce": m.Nonce, "from": s.id}, nil)
+		h.fetchEmbeds(msg, dmMembers)
 		h.maybeAI(s, msg, dmMembers)
 
 	case "edit":
@@ -616,7 +618,9 @@ func (h *Hub) handle(s *session, m *inMsg) {
 			s.sendError(storeErr(err, "Не удалось изменить сообщение."))
 			return
 		}
-		h.broadcastIn(h.dmMembersOf(ctx, msg.ChannelID), "message-update", map[string]any{"message": msg}, nil)
+		dmMembers := h.dmMembersOf(ctx, msg.ChannelID)
+		h.broadcastIn(dmMembers, "message-update", map[string]any{"message": msg}, nil)
+		h.fetchEmbeds(msg, dmMembers)
 
 	case "delete":
 		orig, err := st.Message(ctx, m.ID)
@@ -718,6 +722,9 @@ func (h *Hub) handle(s *session, m *inMsg) {
 
 	case "dm-open":
 		h.openDM(s, m)
+
+	case "pin", "pins", "poll-create", "poll-vote", "search":
+		h.handleMsgExtra(s, m)
 
 	case "voice-stats":
 		h.sendVoiceStats(s, m.TTL)

@@ -67,7 +67,7 @@ pub fn install(_: &WebviewWindow, _: OriginFn, _: AppHandle, then: impl FnOnce()
 mod win {
     use super::*;
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
-    use webview2_com::{take_pwstr, PermissionRequestedEventHandler, ServerCertificateErrorDetectedEventHandler};
+    use webview2_com::{take_pwstr, NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ServerCertificateErrorDetectedEventHandler};
     use windows::core::{Interface, PWSTR};
 
     pub unsafe fn install(controller: &ICoreWebView2Controller, origin: OriginFn, app: AppHandle) -> windows::core::Result<()> {
@@ -130,8 +130,42 @@ mod win {
             Ok(())
         }));
         core.add_PermissionRequested(&handler, &mut token)?;
+
+        // ---- ссылки «в новом окне» (target=_blank, window.open) — в браузер по умолчанию ----
+        // Без обработчика WebView2/wry молча отбрасывает такие клики, и ссылки из чата не открываются.
+        let handler = NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()) };
+            let mut uri = PWSTR::null();
+            args.Uri(&mut uri)?;
+            let uri = take_pwstr(uri);
+            args.SetHandled(true)?;
+            super::open_external(&uri);
+            Ok(())
+        }));
+        core.add_NewWindowRequested(&handler, &mut token)?;
         Ok(())
     }
+}
+
+/// Открывает http(s)-ссылку в браузере по умолчанию; всё остальное (file:, javascript: и т.п.) игнорирует.
+#[cfg(windows)]
+pub fn open_external(uri: &str) {
+    if !is_web_link(uri) {
+        crate::bridge::debug_log(&format!("ссылка не открыта: {uri}"));
+        return;
+    }
+    use windows::core::{w, HSTRING};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let target = HSTRING::from(uri);
+    unsafe {
+        ShellExecuteW(None, w!("open"), &target, None, None, SW_SHOWNORMAL);
+    }
+}
+
+/// Только http/https: открывать через оболочку что-то другое из чата опасно.
+pub fn is_web_link(uri: &str) -> bool {
+    url::Url::parse(uri).map(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some()).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -150,6 +184,16 @@ mod tests {
         assert!(!o.matches("https://evil.example/"));
         let d = Origin { host: "chat.example.com".into(), port: 443, spki: None };
         assert!(d.matches("https://Chat.Example.com/"));
+    }
+
+    #[test]
+    fn web_links_only() {
+        assert!(is_web_link("https://youtube.com/watch?v=1"));
+        assert!(is_web_link("http://82.47.130.62:3000/uploads/x.png"));
+        assert!(!is_web_link("file:///C:/Windows/System32/calc.exe"));
+        assert!(!is_web_link("javascript:alert(1)"));
+        assert!(!is_web_link("ms-settings:"));
+        assert!(!is_web_link(r"C:\Windows\notepad.exe"));
     }
 
     #[test]

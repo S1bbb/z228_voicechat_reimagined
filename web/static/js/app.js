@@ -1,6 +1,6 @@
 import { $, $$, h, avatar, avatarColor, setAvatarSource, lsGet, lsSet, randomId, renderMarkdown, mentionsMe, isEmojiOnly, fmtTime, fmtFull, fmtStamp, fmtDay, sameDay, fmtSize } from "./util.js";
 import { icon } from "./icons.js";
-import { Voice, micTest, sfx, setSfxOutput, rtcConstructor, rtcDiagnostics, qualityLevel } from "./voice.js";
+import { Voice, micTest, sfx, unlockSfx, setSfxOutput, rtcConstructor, rtcDiagnostics, qualityLevel } from "./voice.js";
 import { isDesktop, initDesktop, desktopInfo, desktopPtt, desktopBinding, refreshInfo as refreshDesktopInfo, invoke as desktopInvoke, stateChanged as desktopStateChanged } from "./desktop.js";
 import { EMOJI_GROUPS, QUICK_REACTIONS } from "./emoji.js";
 import { maybeShowWhatsNew } from "./whatsnew.js";
@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS = {
   screenQuality: "1080p30",
   videoDevice: "",
   sounds: true,
+  dmSound: true,
   voicePing: true,
   notifications: false,
 };
@@ -375,6 +376,16 @@ function onMessage(m) {
     case "voice-stats":
       if (S.onVoiceStats) S.onVoiceStats(m);
       return;
+    case "pins":
+      if (S.onPins && m.channelId === S.pinsChannel) S.onPins(m.messages);
+      return;
+    case "pins-changed":
+      if (S.onPins && m.channelId === S.pinsChannel) send("pins", { channelId: m.channelId });
+      if (m.channelId === S.textId && m.by !== S.me.nickname && m.pinned) toast(`${m.by} закрепил(а) сообщение.`);
+      return;
+    case "search-results":
+      if (S.onSearch) S.onSearch(m);
+      return;
     case "desktop-invite":
       S.desktopInvite = m;
       if (S.onDesktopInvite) S.onDesktopInvite(m);
@@ -508,7 +519,21 @@ function requestHistory(channelId, before = 0) {
   send("history", { channelId, before });
 }
 
+// ждущие очередную страницу истории канала (переход к старому сообщению)
+const historyWaiters = [];
+function waitHistory(channelId) {
+  return new Promise((res) => {
+    historyWaiters.push({ channelId, res });
+    setTimeout(() => res(false), 8000);
+  });
+}
+
 function onHistory(m) {
+  for (let i = historyWaiters.length - 1; i >= 0; i--)
+    if (historyWaiters[i].channelId === m.channelId) {
+      historyWaiters[i].res(true);
+      historyWaiters.splice(i, 1);
+    }
   const st = chStore(m.channelId);
   st.loading = false;
   st.hasMore = m.hasMore;
@@ -569,7 +594,9 @@ function onNewMessage(msg, nonce, from) {
     const mention = !!dm || !S.channels.some((c) => c.id === msg.channelId) || mentionsMe(msg.text, S.me.nickname) || (msg.replyTo && msg.replyTo.author === S.me.nickname);
     if (mention) {
       u.mentions++;
-      playSfx("message");
+      if (dm || !S.channels.some((c) => c.id === msg.channelId)) {
+        if (S.settings.dmSound) sfx("dm");
+      } else playSfx("message");
       notify(msg);
     }
     S.unread.set(msg.channelId, u);
@@ -831,6 +858,35 @@ function updateVideoSubscriptions() {
 
 const DRAG_TYPE = "text/z228-user";
 
+// свёрнутые разделы списка каналов (dm / text / voice) — как в Discord: видно только открытое и непрочитанное
+const collapsed = lsGet("z228.collapsed", {});
+
+function categoryHead(key, label, extra = null) {
+  const shut = !!collapsed[key];
+  return h(
+    "div.category.collapsible" + (shut ? ".shut" : ""),
+    {
+      role: "button",
+      tabindex: "0",
+      title: shut ? "Развернуть" : "Свернуть",
+      onclick: () => {
+        collapsed[key] = !collapsed[key];
+        lsSet("z228.collapsed", collapsed);
+        renderChannels();
+      },
+      onkeydown: (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.currentTarget.click();
+        }
+      },
+    },
+    h("span.cat-chevron", { html: icon("chevron", 12) }),
+    h("span", null, label),
+    extra
+  );
+}
+
 function renderChannels() {
   const root = $("#channels");
   root.innerHTML = "";
@@ -838,10 +894,11 @@ function renderChannels() {
     can("channels") ? h("button.icon-btn", { title: "Создать канал", html: icon("plus", 16), onclick: (e) => (e.stopPropagation(), createChannelDialog(kind)) }) : null;
 
   if ((S.dms || []).length) {
-    root.append(h("div.category", null, h("span", null, "Личные сообщения")));
+    root.append(categoryHead("dm", "Личные сообщения"));
     for (const d of S.dms) {
       const u = S.unread.get(d.id);
       const sel = S.view === "text" && S.textId === d.id;
+      if (collapsed.dm && !sel && !(u && u.count)) continue;
       root.append(
         h(
           "button.channel.dm" + (sel ? ".selected" : "") + (u && u.count && !sel ? ".unread" : ""),
@@ -854,10 +911,11 @@ function renderChannels() {
     }
   }
 
-  root.append(h("div.category", null, h("span", null, "Текстовые каналы"), addBtn("text")));
+  root.append(categoryHead("text", "Текстовые каналы", addBtn("text")));
   for (const ch of textChannels()) {
     const u = S.unread.get(ch.id);
     const sel = S.view === "text" && S.textId === ch.id;
+    if (collapsed.text && !sel && !(u && u.count)) continue;
     root.append(
       h(
         "button.channel" + (sel ? ".selected" : "") + (u && u.count && !sel ? ".unread" : ""),
@@ -872,10 +930,11 @@ function renderChannels() {
     );
   }
 
-  root.append(h("div.category", null, h("span", null, "Голосовые каналы"), addBtn("voice")));
+  root.append(categoryHead("voice", "Голосовые каналы", addBtn("voice")));
   const mine = myVoiceChannel();
   for (const ch of voiceChannels()) {
     const sel = S.view === "voice" && S.stageVoiceId === ch.id;
+    if (collapsed.voice && mine !== ch.id && !sel) continue;
     root.append(
       h(
         "button.channel" + (sel ? ".selected" : "") + (mine === ch.id ? ".unread" : ""),
@@ -960,11 +1019,13 @@ function renderHeader() {
   if (S.view === "voice") {
     const ch = channelById(S.stageVoiceId);
     $("#headerIcon").innerHTML = icon("speaker", 22);
+    $("#pinsBtn").hidden = true;
     $("#headerTitle").textContent = ch ? ch.name : "";
     $("#headerTopic").textContent = "";
   } else {
     const ch = channelById(S.textId);
     $("#headerIcon").innerHTML = ch && ch.kind === "dm" ? '<span class="dm-at">@</span>' : icon("hash", 22);
+    $("#pinsBtn").hidden = false;
     $("#headerTitle").textContent = ch ? ch.name : "";
     $("#headerTopic").textContent = "";
   }
@@ -1170,7 +1231,8 @@ function messageEl(m, prev) {
         null,
         h("span.msg-author", { style: { color: avatarColorText(m.author) }, onclick: (e) => userMenuByNick(e, m.author) }, m.author),
         m.author === S.bot ? h("span.bot-tag", null, "БОТ") : null,
-        h("span.msg-time", { title: fmtFull(m.createdAt) }, fmtStamp(m.createdAt))
+        h("span.msg-time", { title: fmtFull(m.createdAt) }, fmtStamp(m.createdAt)),
+        m.pinned ? h("span.msg-pin", { title: `Закрепил(а) ${m.pinned.by}`, html: icon("pin", 13) }) : null
       )
     );
   } else {
@@ -1185,7 +1247,9 @@ function messageEl(m, prev) {
     el.append(t);
   }
 
+  if (m.poll) el.append(pollEl(m));
   if (m.attachments && m.attachments.length) el.append(attachmentsEl(m.attachments));
+  if (m.embeds && m.embeds.length && S.editingId !== m.id) el.append(embedsEl(m.embeds));
 
   const reacts = Object.entries(m.reactions || {}).filter(([, who]) => who.length);
   if (reacts.length) {
@@ -1214,11 +1278,288 @@ function messageEl(m, prev) {
       h("button.icon-btn", { title: "Добавить реакцию", html: icon("smile", 20), onclick: (e) => emojiPicker(e.currentTarget, (emoji) => send("react", { id: m.id, emoji }), el) }),
       h("button.icon-btn", { title: "Ответить", html: icon("reply", 20), onclick: () => setReply(m) })
     );
-    if (mine) actions.append(h("button.icon-btn", { title: "Изменить", html: icon("edit", 20), onclick: () => startEdit(m.id) }));
+    if (mine && !m.poll) actions.append(h("button.icon-btn", { title: "Изменить", html: icon("edit", 20), onclick: () => startEdit(m.id) }));
     if (mine || (can("messages") && !isDm(m.channelId))) actions.append(h("button.icon-btn.danger", { title: "Удалить", html: icon("trash", 20), onclick: (e) => confirmDelete(m, e.shiftKey) }));
     el.append(actions);
   }
   return el;
+}
+
+// ---------- опросы ----------
+
+function pollEl(m) {
+  const p = m.poll;
+  const total = new Set(p.options.flatMap((o) => o.votes.map((v) => v.toLowerCase()))).size;
+  const max = Math.max(1, ...p.options.map((o) => o.votes.length));
+  const me = S.me.nickname.toLowerCase();
+  const voted = p.options.some((o) => o.votes.some((v) => v.toLowerCase() === me));
+  return h(
+    "div.poll",
+    null,
+    h("div.poll-q", null, h("span", { html: icon("poll", 18) }), h("span", null, p.question)),
+    h(
+      "div.poll-opts",
+      null,
+      p.options.map((o, i) => {
+        const mineVote = o.votes.some((v) => v.toLowerCase() === me);
+        const pct = total ? Math.round((o.votes.length / total) * 100) : 0;
+        return h(
+          "button.poll-opt" + (mineVote ? ".mine" : "") + (o.votes.length === max && o.votes.length ? ".lead" : ""),
+          { onclick: () => !m.pending && send("poll-vote", { id: m.id, option: i }), title: o.votes.length ? o.votes.join(", ") : "Пока никто" },
+          h("i.poll-fill", { style: { width: (voted ? pct : 0) + "%" } }),
+          h("span.poll-check", null, mineVote ? "✓" : ""),
+          h("span.poll-text", null, o.text),
+          voted ? h("span.poll-pct", null, `${pct}% · ${o.votes.length}`) : null
+        );
+      })
+    ),
+    h("div.poll-foot", null, `${total} ${plural(total, "голос", "голоса", "голосов")}` + (p.multi ? " · можно выбрать несколько" : "") + (voted ? "" : " · проголосуйте, чтобы увидеть результаты"))
+  );
+}
+
+function plural(n, one, few, many) {
+  const a = n % 10;
+  const b = n % 100;
+  if (a === 1 && b !== 11) return one;
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return few;
+  return many;
+}
+
+function pollDialog() {
+  const chId = S.textId;
+  const q = h("input.input", { placeholder: "Например: во что катаем вечером?", maxlength: 300 });
+  const list = h("div.poll-edit");
+  let multi = false;
+  const addOpt = (val = "") => {
+    if (list.children.length >= 10) return;
+    const inp = h("input.input", { placeholder: `Вариант ${list.children.length + 1}`, maxlength: 120, value: val });
+    const row = h(
+      "div.poll-edit-row",
+      null,
+      inp,
+      h("button.icon-btn", {
+        html: icon("close", 16),
+        title: "Убрать",
+        onclick: () => {
+          if (list.children.length > 2) row.remove();
+        },
+      })
+    );
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && inp === list.lastElementChild?.querySelector("input") && inp.value.trim() && list.children.length < 10) {
+        e.preventDefault();
+        e.stopPropagation();
+        addOpt();
+        list.lastElementChild.querySelector("input").focus();
+      }
+    });
+    list.append(row);
+  };
+  addOpt();
+  addOpt();
+  modal({
+    title: "Опрос",
+    body: [
+      h("label.field", null, h("span", null, "Вопрос"), q),
+      h("div.label", { style: { margin: "14px 0 6px" } }, "Варианты"),
+      list,
+      h("button.btn.btn-link", { onclick: () => addOpt(), style: { padding: "6px 0" } }, "+ Добавить вариант"),
+      toggleRow("Можно выбрать несколько", "", false, (v) => (multi = v)),
+    ],
+    okText: "Опубликовать",
+    onOk: () => {
+      const opts = [...list.querySelectorAll("input")].map((x) => x.value.trim()).filter(Boolean);
+      if (!q.value.trim()) return toast("Напишите вопрос.", "error"), false;
+      if (opts.length < 2) return toast("Нужно хотя бы два варианта.", "error"), false;
+      send("poll-create", { channelId: chId, text: q.value.trim(), keys: opts, value: multi, nonce: randomId(8) });
+    },
+  });
+}
+
+// ---------- превью ссылок ----------
+
+function embedsEl(list) {
+  const box = h("div.embeds");
+  for (const e of list) {
+    if (e.kind === "image") {
+      const img = h("img.embed-image", { src: e.image, loading: "lazy", referrerpolicy: "no-referrer", alt: "" });
+      img.onerror = () => img.remove();
+      img.onload = () => isAtBottom(200) && scrollToBottom();
+      img.onclick = () => openLightbox({ url: e.image, name: e.url.split("/").pop() }, img);
+      box.append(img);
+      continue;
+    }
+    const card = h("div.embed", { style: e.color ? { borderLeftColor: e.color } : null });
+    if (e.site) card.append(h("div.embed-site", null, e.site));
+    if (e.title) card.append(h("a.embed-title", { href: e.url, target: "_blank", rel: "noopener noreferrer" }, e.title));
+    if (e.description && e.kind !== "video") card.append(h("div.embed-desc", null, e.description));
+    if (e.kind === "video" && e.videoId) {
+      const thumb = h(
+        "div.embed-video",
+        {
+          onclick: () => {
+            const src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(e.videoId)}?autoplay=1`;
+            thumb.replaceWith(h("iframe.embed-player", { src, allow: "autoplay; encrypted-media; picture-in-picture; fullscreen", allowfullscreen: true, referrerpolicy: "strict-origin-when-cross-origin" }));
+          },
+          title: "Смотреть здесь",
+        },
+        h("img", { src: e.image, loading: "lazy", referrerpolicy: "no-referrer", alt: "" }),
+        h("span.embed-play", { html: icon("play", 56) })
+      );
+      card.append(thumb);
+    } else if (e.image) {
+      const img = h("img.embed-thumb", { src: e.image, loading: "lazy", referrerpolicy: "no-referrer", alt: "" });
+      img.onerror = () => img.remove();
+      img.onload = () => isAtBottom(200) && scrollToBottom();
+      img.onclick = () => openLightbox({ url: e.image, name: e.title || "" }, img);
+      card.append(img);
+    }
+    box.append(card);
+  }
+  return box;
+}
+
+// ---------- закреплённые ----------
+
+function compactMsgEl(m, { onJump, extra } = {}) {
+  const body = h("div.cmsg-body");
+  if (m.text) body.append(h("div.cmsg-text", { html: renderMarkdown(m.text, { nicknames: knownNicks(), me: S.me.nickname }) }));
+  if (m.poll) body.append(h("div.cmsg-text.muted", null, "📊 " + m.poll.question));
+  if (m.attachments && m.attachments.length) body.append(h("div.cmsg-text.muted", null, "📎 " + m.attachments.map((a) => a.name).join(", ")));
+  return h(
+    "div.cmsg" + (onJump ? ".jumpable" : ""),
+    {
+      // клик по карточке — перейти к сообщению (но не по ссылкам и кнопкам внутри)
+      onclick: (e) => onJump && !e.target.closest("a, button") && onJump(),
+      title: onJump ? "Перейти к сообщению" : null,
+    },
+    avatar(m.author, 32),
+    h(
+      "div.cmsg-main",
+      null,
+      h("div.cmsg-head", null, h("b", { style: { color: avatarColorText(m.author) } }, m.author), h("span.muted.small", null, fmtStamp(m.createdAt)), extra || null),
+      body
+    ),
+    h("div.cmsg-actions", null, onJump ? h("button.btn.btn-sm", { onclick: onJump }, "Перейти") : null)
+  );
+}
+
+function openPins(anchor) {
+  if (layerAnchor === anchor && $("#layer").children.length) return closeLayer();
+  const chId = S.textId;
+  const list = h("div.pins-list", null, h("p.muted", { style: { padding: "12px" } }, "Загружаю…"));
+  const pop = popover(h("div.pins-pop", null, h("div.pins-head", null, h("span", { html: icon("pin", 18) }), "Закреплённые сообщения"), list), anchor, { side: "bottom" });
+  pop.style.left = Math.max(8, anchor.getBoundingClientRect().right - pop.offsetWidth) + "px";
+  S.pinsChannel = chId;
+  S.onPins = (msgs) => {
+    if (!list.isConnected) return (S.onPins = null);
+    list.innerHTML = "";
+    if (!msgs.length) {
+      list.append(h("div.pins-empty", null, h("div", { style: { fontSize: "34px" } }, "📌"), h("p", null, "Здесь пока ничего не закреплено."), h("p.muted.small", null, "Правый клик по сообщению → «Закрепить».")));
+      return;
+    }
+    for (const m of msgs)
+      list.append(
+        compactMsgEl(m, {
+          onJump: () => (closeLayer(), jumpToMessage(m.channelId, m.id)),
+          extra: h("button.icon-btn.cmsg-x", { html: icon("close", 14), title: "Открепить", onclick: () => send("pin", { id: m.id, value: false }) }),
+        })
+      );
+  };
+  send("pins", { channelId: chId });
+}
+
+// ---------- поиск ----------
+
+function channelLabel(id) {
+  const ch = channelById(id);
+  if (ch) return "#" + ch.name;
+  const d = (S.dms || []).find((x) => x.id === id);
+  return d ? "@" + d.peer : "";
+}
+
+// «от:Вася текст» / «from:Вася текст» — искать сообщения Васи
+function parseSearch(raw) {
+  let text = raw.trim();
+  let author = "";
+  const m = text.match(/(?:^|\s)(?:от|from):(?:"([^"]+)"|(\S+))/i);
+  if (m) {
+    author = m[1] || m[2];
+    text = (text.slice(0, m.index) + " " + text.slice(m.index + m[0].length)).trim();
+  }
+  return { text, author };
+}
+
+function highlight(el, q) {
+  if (!q) return el;
+  const needle = q.toLowerCase();
+  const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walk.nextNode()) nodes.push(walk.currentNode);
+  for (const n of nodes) {
+    const t = n.nodeValue;
+    const i = t.toLowerCase().indexOf(needle);
+    if (i < 0) continue;
+    const mark = h("mark", null, t.slice(i, i + q.length));
+    const rest = document.createTextNode(t.slice(i + q.length));
+    n.nodeValue = t.slice(0, i);
+    n.after(mark, rest);
+  }
+  return el;
+}
+
+function openSearch(raw) {
+  const { text, author } = parseSearch(raw);
+  if (!text && !author) return;
+  let scope = S.searchScope || "all";
+  const panel = $("#searchPanel") || h("div.search-panel#searchPanel");
+  if (!panel.isConnected) $("#main").append(panel);
+  const results = h("div.search-results", null, h("p.muted", { style: { padding: "12px" } }, "Ищу…"));
+  const nonce = randomId(8);
+  const run = () => send("search", { text, name: author, channelId: scope === "here" ? S.textId : 0, nonce });
+  const scopeBtn = (id, label) =>
+    h(
+      "button.stats-tab" + (scope === id ? ".sel" : ""),
+      {
+        onclick: () => {
+          scope = S.searchScope = id;
+          openSearch(raw);
+        },
+      },
+      label
+    );
+  panel.innerHTML = "";
+  panel.append(
+    h(
+      "div.search-head",
+      null,
+      h("div.search-title", null, author ? `Сообщения ${author}` + (text ? ` про «${text}»` : "") : `«${text}»`),
+      h("button.icon-btn", { html: icon("close", 18), title: "Закрыть (Esc)", onclick: closeSearch })
+    ),
+    h("div.search-scope", null, scopeBtn("all", "Везде"), S.textId ? scopeBtn("here", "В этом канале") : null),
+    results
+  );
+  S.onSearch = (m) => {
+    if (m.nonce !== nonce || !results.isConnected) return;
+    results.innerHTML = "";
+    if (!m.messages.length) {
+      results.append(h("div.pins-empty", null, h("div", { style: { fontSize: "34px" } }, "🔍"), h("p", null, "Ничего не нашлось."), h("p.muted.small", null, "Подсказка: «от:ник» — сообщения конкретного человека.")));
+      return;
+    }
+    results.append(h("div.muted.small", { style: { padding: "0 4px 6px" } }, m.messages.length >= 50 ? "Показаны 50 самых свежих" : `Найдено: ${m.messages.length}`));
+    for (const msg of m.messages) {
+      const row = compactMsgEl(msg, { onJump: () => jumpToMessage(msg.channelId, msg.id), extra: h("span.search-ch", null, channelLabel(msg.channelId)) });
+      highlight(row.querySelector(".cmsg-body"), text);
+      results.append(row);
+    }
+  };
+  run();
+}
+
+function closeSearch() {
+  const p = $("#searchPanel");
+  if (p) p.remove();
+  S.onSearch = null;
 }
 
 function avatarColorText(nick) {
@@ -1305,10 +1646,31 @@ function scrollToBottom() {
   s.scrollTop = s.scrollHeight;
 }
 
+// jumpToMessage — открыть канал и долистать до сообщения (подгружая историю страницами)
+async function jumpToMessage(channelId, id) {
+  if (S.view !== "text" || S.textId !== channelId) {
+    const st = chStore(channelId);
+    const wait = st.loaded ? null : waitHistory(channelId);
+    selectText(channelId);
+    if (wait) await wait;
+  }
+  const st = chStore(channelId);
+  for (let i = 0; i < 60 && !st.list.some((x) => x.id === id) && st.hasMore; i++) {
+    const oldest = st.list.find((x) => !x.pending);
+    if (!oldest) break;
+    const wait = waitHistory(channelId);
+    st.loading = false;
+    requestHistory(channelId, oldest.id);
+    if (!(await wait)) break;
+  }
+  if (S.textId !== channelId) return;
+  requestAnimationFrame(() => jumpTo(id));
+}
+
 function jumpTo(id) {
   const el = $(`.msg[data-id="${id}"]`);
   if (!el) {
-    toast("Сообщение слишком старое — прокрутите вверх, чтобы найти его.");
+    if (S.textId) jumpToMessage(S.textId, id);
     return;
   }
   el.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -1669,7 +2031,17 @@ function bindComposer() {
       addFiles(files);
     }
   });
-  $("#attachBtn").onclick = () => $("#fileInput").click();
+  $("#attachBtn").onclick = (e) => {
+    const btn = e.currentTarget;
+    if (layerAnchor === btn && $("#layer").children.length) return closeLayer();
+    const menu = h(
+      "div.ctx-menu",
+      null,
+      menuItem("Загрузить файл", () => (closeLayer(), $("#fileInput").click()), { iconName: "file" }),
+      menuItem("Создать опрос", () => (closeLayer(), pollDialog()), { iconName: "poll" })
+    );
+    popover(menu, btn, { side: "top" });
+  };
   $("#fileInput").onchange = (e) => {
     addFiles([...e.target.files]);
     e.target.value = "";
@@ -2117,7 +2489,8 @@ function messageMenu(e, m) {
   const menu = h("div.ctx-menu", null, quick);
   menu.append(menuItem("Ответить", () => setReply(m), { iconName: "reply" }));
   if (m.text) menu.append(menuItem("Копировать текст", () => navigator.clipboard?.writeText(m.text), { iconName: "file" }));
-  if (mine) menu.append(menuItem("Изменить", () => startEdit(m.id), { iconName: "edit" }));
+  if (mine && !m.poll) menu.append(menuItem("Изменить", () => startEdit(m.id), { iconName: "edit" }));
+  menu.append(menuItem(m.pinned ? "Открепить" : "Закрепить", () => send("pin", { id: m.id, value: !m.pinned }), { iconName: "pin" }));
   if (mine || (can("messages") && !isDm(m.channelId))) menu.append(h("div.menu-sep"), menuItem("Удалить сообщение", () => confirmDelete(m, e.shiftKey), { danger: true, iconName: "trash" }));
   popover(menu, null, { x: e.clientX, y: e.clientY });
 }
@@ -2906,6 +3279,11 @@ function settingsNotify(c) {
   c.append(h("h2", null, "Уведомления"));
   c.append(
     toggleRow("Звуки", "Вход/выход в голосовом канале, микрофон, упоминания.", S.settings.sounds, (v) => ((S.settings.sounds = v), saveSettings())),
+    toggleRow("Звук личных сообщений", "Сигнал, когда вам пишут в личку, а переписка не открыта. Работает, даже если остальные звуки выключены.", S.settings.dmSound, (v) => {
+      S.settings.dmSound = v;
+      saveSettings();
+      if (v) sfx("dm");
+    }),
     toggleRow("Пинг, когда кто-то заходит в голос", "Короткий звук, если человек зашёл в любой голосовой канал, а не только в ваш. Без всплывающих окон.", S.settings.voicePing, (v) => ((S.settings.voicePing = v), saveSettings())),
     toggleRow("Уведомления на рабочем столе", "Когда вас упоминают, а вкладка свёрнута.", S.settings.notifications, async (v) => {
       if (v && "Notification" in window && Notification.permission !== "granted") {
@@ -4017,6 +4395,24 @@ function bindUi() {
   $("#stScreen").onclick = toggleScreen;
   $("#voiceChannelLink").onclick = () => voice.channelId && openStage(voice.channelId);
   $("#meBtn").onclick = (e) => userMenu(e, userById(S.me.id) || { id: S.me.id, nickname: S.me.nickname });
+  $("#pinsBtn").onclick = (e) => {
+    e.stopPropagation();
+    openPins(e.currentTarget);
+  };
+  $("#searchInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      openSearch(e.currentTarget.value);
+    }
+    if (e.key === "Escape") {
+      e.currentTarget.value = "";
+      closeSearch();
+      e.currentTarget.blur();
+    }
+  });
+  $("#searchInput").addEventListener("search", (e) => {
+    if (!e.currentTarget.value) closeSearch();
+  });
   $("#membersToggle").onclick = () => {
     const app = $("#app");
     if (matchMedia("(max-width: 1100px)").matches) app.classList.toggle("show-members");
@@ -4072,6 +4468,7 @@ function bindUi() {
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
+      if ($("#searchPanel") && !document.querySelector(".modal-backdrop") && !$("#layer").children.length) closeSearch();
       if (!$("#lightbox").hidden) closeLightbox();
       else if ($("#layer").children.length) closeLayer();
       else if (settingsEl && !document.querySelector(".modal-backdrop")) closeSettings();
@@ -4152,8 +4549,13 @@ function bindUi() {
   };
 
   // браузеры не дают проигрывать звук до первого клика — разблокируем
-  document.addEventListener("pointerdown", () => {
+  const unlockAll = () => {
+    unlockSfx();
     voice.unlockAudio();
+  };
+  document.addEventListener("keydown", unlockSfx, { once: true });
+  document.addEventListener("pointerdown", () => {
+    unlockAll();
     if ($("#connBanner").textContent.includes("включить звук")) banner(null);
   });
 

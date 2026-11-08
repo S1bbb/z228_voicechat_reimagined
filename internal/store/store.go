@@ -52,6 +52,9 @@ type Message struct {
 	ReplyTo     *ReplyRef           `json:"replyTo"`
 	Attachments []Attachment        `json:"attachments"`
 	Reactions   map[string][]string `json:"reactions"`
+	Pinned      *Pin                `json:"pinned,omitempty"`
+	Embeds      []Embed             `json:"embeds,omitempty"`
+	Poll        *Poll               `json:"poll,omitempty"`
 }
 
 type Store struct {
@@ -490,7 +493,7 @@ func (s *Store) MoveChannel(ctx context.Context, id int64, dir int) error {
 
 const msgSelect = `
 SELECT m.id, m.channel_id, m.author, m.text, m.attachments, m.created_at, m.edited_at,
-       r.id, r.author, r.text
+       r.id, r.author, r.text, m.pinned_at, m.pinned_by, m.embeds, m.poll
 FROM messages m
 LEFT JOIN messages r ON r.id = m.reply_to
 `
@@ -501,9 +504,19 @@ func scanMessage(sc interface{ Scan(...any) error }) (Message, error) {
 	var edited sql.NullInt64
 	var rID sql.NullInt64
 	var rAuthor, rText sql.NullString
-	if err := sc.Scan(&m.ID, &m.ChannelID, &m.Author, &m.Text, &att, &m.CreatedAt, &edited, &rID, &rAuthor, &rText); err != nil {
+	var pinnedAt sql.NullInt64
+	var pinnedBy, embeds, poll string
+	if err := sc.Scan(&m.ID, &m.ChannelID, &m.Author, &m.Text, &att, &m.CreatedAt, &edited, &rID, &rAuthor, &rText,
+		&pinnedAt, &pinnedBy, &embeds, &poll); err != nil {
 		return m, err
 	}
+	if pinnedAt.Valid {
+		m.Pinned = &Pin{By: pinnedBy, At: pinnedAt.Int64}
+	}
+	if embeds != "" && embeds != "[]" {
+		_ = json.Unmarshal([]byte(embeds), &m.Embeds)
+	}
+	m.Poll = parsePoll(poll)
 	if edited.Valid {
 		v := edited.Int64
 		m.EditedAt = &v
@@ -583,7 +596,10 @@ func (s *Store) fillReactions(ctx context.Context, msgs []Message) error {
 		m := &msgs[idx[id]]
 		m.Reactions[emoji] = append(m.Reactions[emoji], author)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return s.fillPolls(ctx, msgs)
 }
 
 func (s *Store) Message(ctx context.Context, id int64) (Message, error) {
@@ -635,7 +651,7 @@ func (s *Store) EditMessage(ctx context.Context, id int64, author, text string) 
 	if strings.TrimSpace(text) == "" && len(m.Attachments) == 0 {
 		return m, errors.New("empty")
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE messages SET text=?, edited_at=? WHERE id=?`, text, nowMs(), id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE messages SET text=?, edited_at=?, embeds='[]' WHERE id=?`, text, nowMs(), id); err != nil {
 		return m, err
 	}
 	return s.Message(ctx, id)

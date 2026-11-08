@@ -792,6 +792,19 @@ export function setSfxOutput(id) {
   if (sfxCtx && sfxCtx.setSinkId) sfxCtx.setSinkId(sfxSink).catch(() => {});
 }
 
+// Браузер не даёт звучать, пока человек ничего не нажал на странице: «будим» звук на первое нажатие,
+// иначе сигнал о личном сообщении молчит (например, в приложении, сразу свёрнутом в трей).
+export function unlockSfx() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!sfxCtx) {
+      sfxCtx = new AC();
+      if (sfxSink && sfxCtx.setSinkId) sfxCtx.setSinkId(sfxSink).catch(() => {});
+    }
+    if (sfxCtx.state === "suspended") sfxCtx.resume().catch(() => {});
+  } catch {}
+}
+
 export function sfx(kind) {
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -807,6 +820,8 @@ export function sfx(kind) {
       mute: [[440, 0], [330, 0.06]],
       unmute: [[330, 0], [440, 0.06]],
       message: [[880, 0], [1175, 0.07]],
+      // личное сообщение — заметнее: три ноты вверх
+      dm: [[784, 0, 0.13], [988, 0.08, 0.13], [1319, 0.16, 0.12, 0.22]],
       deafen: [[392, 0], [262, 0.07]],
       ping: [[1319, 0]],
       undeafen: [[262, 0], [392, 0.07]],

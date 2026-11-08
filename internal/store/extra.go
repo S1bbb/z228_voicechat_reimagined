@@ -39,14 +39,14 @@ CREATE INDEX IF NOT EXISTS dm_members_nick ON dm_members(nick);
 `
 
 func (s *Store) migrate(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, schemaExtra+schemaStats); err != nil {
+	if _, err := s.db.ExecContext(ctx, schemaExtra+schemaStats+schemaMsgExtra); err != nil {
 		return err
 	}
-	for _, c := range []struct{ table, column, def string }{
+	for _, c := range append([]struct{ table, column, def string }{
 		{"invites", "max_uses", "INTEGER NOT NULL DEFAULT 0"}, // 0 — без ограничения, 1 — разовый
 		{"invites", "expires_at", "INTEGER"},                  // NULL — бессрочный
 		{"roles", "perms", "TEXT NOT NULL DEFAULT ''"},        // права через запятую
-	} {
+	}, msgExtraColumns...) {
 		has, err := s.hasColumn(ctx, c.table, c.column)
 		if err != nil {
 			return err
