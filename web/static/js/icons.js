@@ -37,6 +37,8 @@ const P = {
   signal:
     '<rect x="3" y="15" width="4" height="6" rx="1" fill="currentColor"/><rect x="10" y="10" width="4" height="11" rx="1" fill="currentColor"/><rect x="17" y="4" width="4" height="17" rx="1" fill="currentColor"/>',
   expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>',
+  chevronLeft: '<path d="M14 6l-6 6 6 6" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  chevronRight: '<path d="M10 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
   up: '<path d="M7 14l5-5 5 5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round"/>',
   down: '<path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round"/>',
   heart: '<path d="M12 21s-8-5.2-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 5.8-8 11-8 11z" fill="currentColor"/>',

@@ -1225,7 +1225,7 @@ function attachmentsEl(list) {
     const ratio = a.width && a.height ? { aspectRatio: `${a.width} / ${a.height}`, width: Math.min(420, a.width) + "px" } : {};
     if (mime.startsWith("image/")) {
       const img = h("img.att-image", { src: a.url, alt: a.name, loading: "lazy", style: ratio });
-      img.onclick = () => openLightbox(a);
+      img.onclick = () => openLightbox(a, img);
       img.onload = () => isAtBottom(200) && scrollToBottom();
       box.append(img);
     } else if (mime.startsWith("video/")) {
@@ -1892,7 +1892,11 @@ function toggleFocus(key) {
 
 // ============================================================ всплывающие меню
 
+// кнопка, открывшая текущий поповер: клик по ней не должен тут же его закрывать
+let layerAnchor = null;
+
 function closeLayer() {
+  layerAnchor = null;
   $("#layer").innerHTML = "";
   $$(".msg.menu-open").forEach((el) => el.classList.remove("menu-open"));
 }
@@ -1901,6 +1905,7 @@ function popover(content, anchor, { side = "right", x, y } = {}) {
   closeLayer();
   const pop = h("div.popover", null, content);
   $("#layer").append(pop);
+  layerAnchor = anchor || null;
   const r = anchor ? anchor.getBoundingClientRect() : { left: x, right: x, top: y, bottom: y };
   const pw = pop.offsetWidth;
   const ph = pop.offsetHeight;
@@ -2111,6 +2116,8 @@ function messageMenu(e, m) {
 }
 
 function emojiPicker(anchor, onPick, msgEl) {
+  // повторный клик по той же кнопке — закрыть
+  if (anchor && layerAnchor === anchor && $("#layer").children.length) return closeLayer();
   if (msgEl) msgEl.classList.add("menu-open");
   const grid = h("div.emoji-grid");
   const search = h("input.input.search", { placeholder: "Найти эмодзи" });
@@ -2144,12 +2151,174 @@ function emojiPicker(anchor, onPick, msgEl) {
   setTimeout(() => search.focus());
 }
 
-function openLightbox(a) {
+// ---------- просмотр картинок: стрелки листают картинки канала, колесо/клик — зум, перетаскивание — сдвиг
+
+let lightboxClose = null;
+
+function closeLightbox() {
+  if (lightboxClose) lightboxClose();
+  else $("#lightbox").hidden = true;
+}
+
+function openLightbox(a, fromImg) {
+  closeLightbox();
   const lb = $("#lightbox");
+  // все картинки в загруженной истории текущего канала, по порядку
+  const imgs = [...$$("#messagesInner img.att-image")];
+  const gallery = imgs.map((el) => ({ url: el.getAttribute("src"), name: el.alt || "" }));
+  let idx = fromImg ? imgs.indexOf(fromImg) : -1;
+  if (idx < 0) idx = gallery.findIndex((g) => g.url === a.url);
+  if (idx < 0) {
+    gallery.splice(0, gallery.length, { url: a.url, name: a.name || "" });
+    idx = 0;
+  }
+
+  const img = h("img", { draggable: "false" });
+  const stageEl = h("div.lb-stage", null, img);
+  const counter = h("span.lb-count");
+  const zoomLabel = h("button.lb-btn.lb-zoom", { title: "Сбросить масштаб (0)" });
+  const orig = h("a.lb-btn", { target: "_blank", rel: "noopener", title: "Открыть оригинал", html: icon("download", 20) });
+  const prev = h("button.lb-nav.lb-prev", { title: "Предыдущая (←)", html: icon("chevronLeft", 28) });
+  const next = h("button.lb-nav.lb-next", { title: "Следующая (→)", html: icon("chevronRight", 28) });
+  const bar = h(
+    "div.lb-bar",
+    null,
+    counter,
+    h("button.lb-btn", { title: "Уменьшить (−)", text: "−", onclick: () => zoomBy(1 / 1.4) }),
+    zoomLabel,
+    h("button.lb-btn", { title: "Увеличить (+)", text: "+", onclick: () => zoomBy(1.4) }),
+    orig,
+    h("button.lb-btn", { title: "Закрыть (Esc)", html: icon("close", 20), onclick: () => closeLightbox() })
+  );
   lb.innerHTML = "";
-  lb.append(h("div", { style: { textAlign: "center" } }, h("img", { src: a.url, alt: a.name }), h("a", { href: a.url, target: "_blank", rel: "noopener", onclick: (e) => e.stopPropagation() }, "Открыть оригинал")));
+  lb.append(stageEl, prev, next, bar);
   lb.hidden = false;
-  lb.onclick = () => (lb.hidden = true);
+
+  let scale = 1;
+  let tx = 0;
+  let ty = 0;
+  const MIN = 1;
+  const MAX = 8;
+  const apply = () => {
+    img.style.transition = "";
+    img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    img.style.cursor = scale > 1 ? "grab" : "zoom-in";
+    zoomLabel.textContent = Math.round(scale * 100) + "%";
+  };
+  // не даём утащить картинку за край
+  const clamp = () => {
+    const mx = Math.max(0, (img.offsetWidth * scale - stageEl.clientWidth) / 2);
+    const my = Math.max(0, (img.offsetHeight * scale - stageEl.clientHeight) / 2);
+    tx = Math.max(-mx, Math.min(mx, tx));
+    ty = Math.max(-my, Math.min(my, ty));
+  };
+  // зум с сохранением точки под курсором (cx, cy — относительно центра сцены)
+  const zoomTo = (ns, cx = 0, cy = 0) => {
+    ns = Math.max(MIN, Math.min(MAX, ns));
+    const k = ns / scale;
+    tx = cx - (cx - tx) * k;
+    ty = cy - (cy - ty) * k;
+    scale = ns;
+    if (scale === 1) tx = ty = 0;
+    clamp();
+    apply();
+  };
+  const zoomBy = (f) => zoomTo(scale * f);
+  const fromCenter = (e) => {
+    const r = stageEl.getBoundingClientRect();
+    return [e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2)];
+  };
+
+  const show = (i) => {
+    idx = (i + gallery.length) % gallery.length;
+    const g = gallery[idx];
+    scale = 1;
+    tx = ty = 0;
+    img.src = g.url;
+    img.alt = g.name;
+    orig.href = g.url;
+    counter.textContent = gallery.length > 1 ? `${idx + 1} / ${gallery.length}` : "";
+    prev.hidden = next.hidden = gallery.length < 2;
+    apply();
+  };
+
+  stageEl.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      zoomTo(scale * Math.exp(-e.deltaY * 0.0015), ...fromCenter(e));
+    },
+    { passive: false }
+  );
+
+  // клик по картинке — зум ×2.5 в точку / сброс; перетаскивание при увеличении — сдвиг
+  let drag = null;
+  img.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    drag = { x: e.clientX, y: e.clientY, tx, ty, moved: false };
+    img.setPointerCapture(e.pointerId);
+  });
+  img.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x;
+    const dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+    if (scale > 1 && drag.moved) {
+      tx = drag.tx + dx;
+      ty = drag.ty + dy;
+      clamp();
+      img.style.cursor = "grabbing";
+      img.style.transition = "none";
+      img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    }
+  });
+  img.addEventListener("pointerup", (e) => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (d.moved) {
+      // свайп по неувеличенной картинке листает
+      const dx = e.clientX - d.x;
+      if (scale === 1 && gallery.length > 1 && Math.abs(dx) > 60) show(idx + (dx < 0 ? 1 : -1));
+      else apply();
+      return;
+    }
+    if (scale > 1) zoomTo(1);
+    else zoomTo(2.5, ...fromCenter(e));
+  });
+  img.addEventListener("pointercancel", () => (drag = null));
+
+  prev.onclick = () => show(idx - 1);
+  next.onclick = () => show(idx + 1);
+  zoomLabel.onclick = () => zoomTo(1);
+  // клик по пустому месту вокруг картинки закрывает
+  lb.onclick = (e) => {
+    if (e.target === lb || e.target === stageEl) closeLightbox();
+  };
+
+  const onKey = (e) => {
+    let handled = true;
+    if (e.key === "ArrowLeft") show(idx - 1);
+    else if (e.key === "ArrowRight") show(idx + 1);
+    else if (e.key === "+" || e.key === "=") zoomBy(1.4);
+    else if (e.key === "-" || e.key === "_") zoomBy(1 / 1.4);
+    else if (e.key === "0") zoomTo(1);
+    else if (e.key === "Escape") closeLightbox();
+    else handled = false;
+    if (handled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+  window.addEventListener("keydown", onKey, true);
+  lightboxClose = () => {
+    window.removeEventListener("keydown", onKey, true);
+    lightboxClose = null;
+    lb.hidden = true;
+    lb.innerHTML = "";
+  };
+  show(idx);
 }
 
 // ============================================================ модалки
@@ -3121,7 +3290,27 @@ function settingsRoles(c) {
   }
   if ((S.roles || []).length) c.append(list);
   const name = h("input.input", { placeholder: "Название роли", maxlength: 32 });
-  const color = h("input.role-color", { type: "color", value: "#22d3ee", title: "Цвет роли" });
+  const color = h("input.role-color", { type: "color", value: "#22d3ee", title: "Свой цвет" });
+  // готовые цвета — чтобы не ковыряться в палитре; последний кружок — своя палитра
+  const swatches = h("div.color-swatches");
+  const markSwatch = () => {
+    const v = color.value.toLowerCase();
+    let preset = false;
+    for (const b of swatches.querySelectorAll(".swatch[data-c]")) {
+      const on = b.dataset.c === v;
+      preset ||= on;
+      b.classList.toggle("sel", on);
+    }
+    customSwatch.classList.toggle("sel", !preset);
+    customSwatch.style.setProperty("--c", preset ? "" : v);
+  };
+  for (const [c, label] of ROLE_COLORS) {
+    swatches.append(h("button.swatch", { type: "button", title: label, dataset: { c }, style: { background: c }, onclick: () => ((color.value = c), markSwatch()) }));
+  }
+  const customSwatch = h("label.swatch.swatch-custom", { title: "Свой цвет из палитры" }, color);
+  swatches.append(customSwatch);
+  color.oninput = markSwatch;
+  markSwatch();
   S.newRolePerms = S.newRolePerms || ["ai"];
   const create = () => {
     if (!name.value.trim()) return;
@@ -3132,11 +3321,25 @@ function settingsRoles(c) {
     if (e.key === "Enter") create();
   };
   c.append(
-    h("div", { style: { display: "flex", gap: "8px", marginTop: "12px", maxWidth: "560px", alignItems: "center" } }, color, name, h("button.btn.btn-primary", { onclick: create }, "Создать роль")),
+    h("div", { style: { marginTop: "12px" } }, h("div.muted.small", { style: { marginBottom: "6px" } }, "Цвет новой роли"), swatches),
+    h("div", { style: { display: "flex", gap: "8px", marginTop: "8px", maxWidth: "560px", alignItems: "center" } }, name, h("button.btn.btn-primary", { onclick: create }, "Создать роль")),
     h("div", { style: { marginTop: "8px" } }, h("span.muted.small", null, "Права новой роли: "), permChips(S.newRolePerms, (p) => (S.newRolePerms = p))),
     h("p.muted.small", { style: { marginTop: "8px" } }, "Назначить роль: клик по человеку в списке справа → «Роль». Справа участники группируются по ролям в этом порядке.")
   );
 }
+
+const ROLE_COLORS = [
+  ["#22d3ee", "Бирюзовый"],
+  ["#3b82f6", "Синий"],
+  ["#8b5cf6", "Фиолетовый"],
+  ["#ec4899", "Розовый"],
+  ["#ef4444", "Красный"],
+  ["#f97316", "Оранжевый"],
+  ["#facc15", "Жёлтый"],
+  ["#22c55e", "Зелёный"],
+  ["#14b8a6", "Морская волна"],
+  ["#a3a3a3", "Серый"],
+];
 
 // ---------- ключи доступа ----------
 
@@ -3616,13 +3819,13 @@ function bindUi() {
   };
 
   document.addEventListener("click", (e) => {
-    if (!e.target.closest(".popover")) closeLayer();
+    if (!e.target.closest(".popover") && !(layerAnchor && layerAnchor.contains(e.target))) closeLayer();
     if (!e.target.closest("#serverMenu")) $("#serverMenu").hidden = true;
   });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (!$("#lightbox").hidden) $("#lightbox").hidden = true;
+      if (!$("#lightbox").hidden) closeLightbox();
       else if ($("#layer").children.length) closeLayer();
       else if (settingsEl && !document.querySelector(".modal-backdrop")) closeSettings();
     }
