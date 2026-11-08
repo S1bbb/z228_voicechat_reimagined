@@ -3777,7 +3777,7 @@ function drawStats(body, st) {
     list.append(
       h(
         "div.stats-row",
-        { title: `Заходов: ${u.sessions} · самый долгий: ${fmtDur(u.longest)} · последний раз: ${fmtFull(u.lastAt)}` },
+        { title: `Заходов: ${u.sessions} · самый долгий раз: ${fmtDur(u.longest)}` },
         h("span.stats-rank", null, medals[i] || String(i + 1)),
         avatar(u.nickname, 32),
         h(
@@ -3811,30 +3811,6 @@ function drawStats(body, st) {
         )
       );
     body.append(h("h3.stats-h", null, "Каналы"), cl);
-  }
-
-  if (st.recent.length) {
-    const t = (ms) => new Date(ms).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-    const day = (ms) => {
-      const d = new Date(ms);
-      if (d.toDateString() === new Date().toDateString()) return "";
-      return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) + ", ";
-    };
-    const log = h("div.stats-log");
-    for (const r of st.recent) {
-      const color = nickRoleColor(r.nickname);
-      log.append(
-        h(
-          "div.stats-log-row",
-          null,
-          h("span.stats-nick", color ? { style: { color } } : null, r.nickname),
-          h("span.muted", null, " в «" + r.channel + "» "),
-          h("span.stats-when", null, day(r.start) + t(r.start) + " – " + (r.active ? "сейчас" : t(r.end))),
-          r.active ? h("span.stats-live", null, "в эфире") : h("span.muted.small", null, " · " + fmtDur(r.end - r.start))
-        )
-      );
-    }
-    body.append(h("h3.stats-h", null, "Недавно"), log);
   }
 }
 

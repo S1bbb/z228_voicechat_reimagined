@@ -66,7 +66,6 @@ type UserVoiceStats struct {
 	Nickname string        `json:"nickname"`
 	Ms       int64         `json:"ms"`
 	Sessions int           `json:"sessions"`
-	LastAt   int64         `json:"lastAt"`
 	Longest  int64         `json:"longest"`
 	Channels []ChannelTime `json:"channels"`
 }
@@ -77,24 +76,15 @@ type ChannelVoiceStats struct {
 	People int    `json:"people"`
 }
 
-type VoiceSession struct {
-	Nickname string `json:"nickname"`
-	Channel  string `json:"channel"`
-	Start    int64  `json:"start"`
-	End      int64  `json:"end"`
-	Active   bool   `json:"active"`
-}
-
 type VoiceStats struct {
 	Since    int64               `json:"since"`
 	TotalMs  int64               `json:"totalMs"`
 	Users    []UserVoiceStats    `json:"users"`
 	Channels []ChannelVoiceStats `json:"channels"`
-	Recent   []VoiceSession      `json:"recent"`
 }
 
 // VoiceStats — кто где сколько сидел с момента since (0 — за всё время). active — id идущих сессий,
-// у них конец считаем «сейчас».
+// у них конец считаем «сейчас». Когда именно кто сидел — наружу не отдаём, только суммы.
 func (s *Store) VoiceStats(ctx context.Context, since, now int64, active map[int64]bool) (VoiceStats, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, nick_key, nick, channel_id, channel_name, started_at, ended_at FROM voice_sessions
 		WHERE ended_at>? AND nick_key NOT IN (SELECT nick FROM bans) ORDER BY started_at`, since)
@@ -110,8 +100,7 @@ func (s *Store) VoiceStats(ctx context.Context, since, now int64, active map[int
 	userCh := map[chKey]*ChannelTime{}
 	chans := map[int64]*ChannelVoiceStats{}
 	chPeople := map[int64]map[string]bool{}
-	out := VoiceStats{Since: since, Users: []UserVoiceStats{}, Channels: []ChannelVoiceStats{}, Recent: []VoiceSession{}}
-	var recent []VoiceSession
+	out := VoiceStats{Since: since, Users: []UserVoiceStats{}, Channels: []ChannelVoiceStats{}}
 	for rows.Next() {
 		var (
 			id, chID, start, end int64
@@ -140,9 +129,6 @@ func (s *Store) VoiceStats(ctx context.Context, since, now int64, active map[int
 		u.Nickname = nick // последнее написание ника
 		u.Ms += d
 		u.Sessions++
-		if end > u.LastAt {
-			u.LastAt = end
-		}
 		if d > u.Longest {
 			u.Longest = d
 		}
@@ -162,7 +148,6 @@ func (s *Store) VoiceStats(ctx context.Context, since, now int64, active map[int
 		c.Ms += d
 		chPeople[chID][key] = true
 		out.TotalMs += d
-		recent = append(recent, VoiceSession{Nickname: nick, Channel: chName, Start: start, End: end, Active: live})
 	}
 	if err := rows.Err(); err != nil {
 		return VoiceStats{}, err
@@ -180,12 +165,6 @@ func (s *Store) VoiceStats(ctx context.Context, since, now int64, active map[int
 		out.Channels = append(out.Channels, *c)
 	}
 	sort.Slice(out.Channels, func(i, j int) bool { return out.Channels[i].Ms > out.Channels[j].Ms })
-	// последние сессии — свежие сначала
-	sort.Slice(recent, func(i, j int) bool { return recent[i].End > recent[j].End })
-	if len(recent) > 40 {
-		recent = recent[:40]
-	}
-	out.Recent = append(out.Recent, recent...)
 	return out, nil
 }
 

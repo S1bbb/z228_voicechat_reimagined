@@ -47,9 +47,6 @@ func TestVoiceStats(t *testing.T) {
 	if st.TotalMs != 55*min || len(st.Channels) != 2 || st.Channels[0].Name != "Общий" || st.Channels[0].People != 2 {
 		t.Fatalf("каналы: %+v total %d", st.Channels, st.TotalMs)
 	}
-	if len(st.Recent) != 4 || !st.Recent[0].Active {
-		t.Fatalf("последние: %+v", st.Recent)
-	}
 
 	// за последние 15 минут: у Васи только кусок «Катки», сессия Пети раньше
 	st, _ = s.VoiceStats(ctx, base+45*min, base+60*min, map[int64]bool{live: true})
