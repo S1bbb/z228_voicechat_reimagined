@@ -12,8 +12,9 @@
     <link rel="stylesheet" href="/style.css" />
     <script>
       try {
-        const t = JSON.parse(localStorage.getItem("z228.settings") || "{}").theme;
-        if (t === "light") document.documentElement.dataset.theme = "light";
+        const s = JSON.parse(localStorage.getItem("z228.settings") || "{}");
+        if (s.theme === "light") document.documentElement.dataset.theme = "light";
+        if (s.design === "graphite2" || s.design === "islands") document.documentElement.dataset.design = s.design;
       } catch {}
     </script>
   </head>

@@ -9,6 +9,7 @@ import { maybeShowWhatsNew } from "./whatsnew.js";
 
 const DEFAULT_SETTINGS = {
   theme: "dark",
+  design: "classic", // classic | graphite2 | islands
   inputDevice: "",
   outputDevice: "",
   outputVolume: 100,
@@ -2698,7 +2699,31 @@ function settingsLook(c) {
       )
     );
   }
+  c.append(h("h3", null, "Дизайн"));
+  for (const [id, label, hint] of DESIGNS) {
+    c.append(
+      h(
+        "div.radio-row" + (S.settings.design === id ? ".sel" : ""),
+        {
+          onclick: () => {
+            S.settings.design = id;
+            saveSettings();
+            applyTheme();
+            renderSettings();
+          },
+        },
+        h("span.menu-check" + (S.settings.design === id ? ".on" : "")),
+        h("div", null, h("div", null, label), h("div.muted.small", null, hint))
+      )
+    );
+  }
 }
+
+const DESIGNS = [
+  ["classic", "Классический", "Как было раньше."],
+  ["graphite2", "Графит 2.0", "Та же раскладка, но чище: мягче контраст, аккуратнее выделение и реакции."],
+  ["islands", "Острова", "Панели отдельными скруглёнными карточками, мягкие формы."],
+];
 
 function settingsNotify(c) {
   c.append(h("h2", null, "Уведомления"));
@@ -3408,6 +3433,8 @@ function logout() {
 
 function applyTheme() {
   document.documentElement.dataset.theme = S.settings.theme === "light" ? "light" : "dark";
+  const d = S.settings.design;
+  document.documentElement.dataset.design = DESIGNS.some(([id]) => id === d) ? d : "classic";
 }
 
 // ============================================================ вход

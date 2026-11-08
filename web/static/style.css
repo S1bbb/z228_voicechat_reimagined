@@ -2552,3 +2552,231 @@ body.dragging-user .channel {
     animation: none;
   }
 }
+
+/* ---------- дизайны: «Графит 2.0» и «Острова» (выбираются в настройках, по умолчанию классический) ---------- */
+
+:root[data-design="graphite2"]:not([data-theme="light"]),
+:root[data-design="islands"]:not([data-theme="light"]) {
+  --bg-tertiary: #111317;
+  --bg-secondary: #16181d;
+  --bg-secondary-alt: #121418;
+  --bg-primary: #1c1f25;
+  --bg-floating: #121418;
+  --bg-modifier-hover: rgba(255, 255, 255, 0.04);
+  --bg-modifier-active: rgba(255, 255, 255, 0.08);
+  --bg-modifier-selected: rgba(47, 212, 238, 0.12);
+  --bg-input: #262a31;
+  --border: #23262d;
+  --text-normal: #e7e9ee;
+  --text-muted: #8a909b;
+  --channel-default: #8a909b;
+  --interactive-normal: #8a909b;
+  --brand: #2fd4ee;
+  --brand-hover: #14bcd8;
+  --brand-dim: rgba(47, 212, 238, 0.14);
+  --code-bg: #262a31;
+  --scroll-thumb: #2e333b;
+}
+:root[data-design="islands"]:not([data-theme="light"]) {
+  --bg-tertiary: #0f1114;
+  --bg-secondary: #1b1e24;
+  --bg-secondary-alt: #23272e;
+  --bg-primary: #1b1e24;
+  --bg-floating: #16191e;
+  --border: #23272e;
+}
+
+/* общее для обоих новых дизайнов */
+:root[data-design="graphite2"],
+:root[data-design="islands"] {
+  & .server-header,
+  & .main-header {
+    box-shadow: 0 1px 0 var(--border);
+  }
+  & .channel {
+    border-radius: 6px;
+    font-size: 15px;
+  }
+  & .channel.selected {
+    box-shadow: none;
+    color: var(--header-primary);
+  }
+  & .channel.selected .ico {
+    color: var(--brand);
+    opacity: 1;
+  }
+  & .voice-user {
+    border-radius: 6px;
+  }
+  & .btn {
+    border-radius: 6px;
+  }
+  & .composer {
+    border-radius: 10px;
+  }
+  & .reaction {
+    border-radius: 999px;
+    background: var(--bg-input);
+    border-color: var(--border);
+  }
+  & .reaction.mine {
+    background: var(--brand-dim);
+    border-color: var(--brand);
+  }
+  & .mention {
+    border-radius: 4px;
+    padding: 0 3px;
+  }
+  & .msg-actions {
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  & .radio-row {
+    border-radius: 8px;
+  }
+  /* статус голоса — на всю ширину, кнопки отдельным рядом (иначе текст переносится в три строки) */
+  & .voice-panel {
+    padding: 10px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  & .voice-panel-info {
+    flex-basis: 100%;
+    padding: 0 2px;
+  }
+  & .voice-panel-actions {
+    flex: 1;
+  }
+  & .voice-panel-actions .icon-btn {
+    flex: 1;
+  }
+}
+
+/* «Острова»: панели-карточки, мягкие формы */
+:root[data-design="islands"] {
+  & .category {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 600;
+  }
+  & .server-header {
+    min-height: 60px;
+    border-radius: 16px 16px 0 0;
+  }
+  & .server-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 11px;
+  }
+  & .voice-panel {
+    margin: 0 8px 8px;
+    border: 0;
+    border-radius: 14px;
+  }
+  & .user-panel {
+    margin: 0 8px 8px;
+    height: 56px;
+    border-radius: 14px;
+    gap: 4px;
+  }
+  & .user-panel-me {
+    border-radius: 10px;
+  }
+  & .voice-panel-actions {
+    gap: 6px;
+  }
+  & .voice-panel .icon-btn,
+  & .user-panel > .icon-btn {
+    border-radius: 10px;
+    background: var(--bg-input);
+  }
+  & .voice-panel .icon-btn:hover,
+  & .user-panel > .icon-btn:hover {
+    background: var(--bg-modifier-active);
+  }
+  & #vpLeave,
+  & #vpLeave:hover {
+    background: var(--danger);
+    color: #2a0a0a;
+  }
+  & .main-header {
+    height: 56px;
+    padding: 0 10px 0 20px;
+  }
+  & .composer {
+    border-radius: 22px;
+    padding: 6px 10px;
+  }
+  & .composer-reply,
+  & .composer-files {
+    border-radius: 16px 16px 0 0;
+  }
+  & .member {
+    border-radius: 10px;
+  }
+  & .member .avatar {
+    border-radius: 30%;
+  }
+}
+@media (min-width: 761px) {
+  :root[data-design="islands"] {
+    & .app {
+      padding: 10px;
+    }
+    & .sidebar {
+      margin-right: 5px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+    }
+    /* шапка + чат — одна карточка, участники — отдельная на всю высоту */
+    & .main {
+      margin-left: 5px;
+      background: transparent;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 10px auto;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    & .main-body {
+      display: contents;
+    }
+    & .main-header {
+      grid-column: 1;
+      grid-row: 1;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      border-radius: 16px 16px 0 0;
+    }
+    & .chat,
+    & .stage {
+      grid-column: 1;
+      grid-row: 2;
+      min-height: 0;
+      border: 1px solid var(--border);
+      border-top: 0;
+      border-radius: 0 0 16px 16px;
+      overflow: hidden;
+    }
+    & .chat {
+      background: var(--bg-primary);
+    }
+    & #membersResizer {
+      grid-column: 2;
+      grid-row: 1 / -1;
+      justify-self: center;
+    }
+    & .members {
+      grid-column: 3;
+      grid-row: 1 / -1;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+    }
+  }
+}
+@media (min-width: 761px) and (max-width: 1100px) {
+  :root[data-design="islands"] .app.show-members .members {
+    top: 76px;
+    right: 10px;
+    bottom: 10px;
+  }
+}
