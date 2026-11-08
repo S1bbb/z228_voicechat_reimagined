@@ -44,6 +44,9 @@ var cmdPerm = map[string]string{
 	"backup-download":  PermAdmin,
 	"ai-settings":      PermAdmin,
 	"ai-config":        PermAdmin,
+	"ai-vision":        PermAdmin,
+	"ai-memory":        PermAdmin,
+	"ai-memory-delete": PermAdmin,
 }
 
 func validPerms(in []string) []string {

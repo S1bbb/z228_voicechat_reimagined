@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS dm_members_nick ON dm_members(nick);
 `
 
 func (s *Store) migrate(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, schemaExtra); err != nil {
+	if _, err := s.db.ExecContext(ctx, schemaExtra+schemaStats); err != nil {
 		return err
 	}
 	for _, c := range []struct{ table, column, def string }{

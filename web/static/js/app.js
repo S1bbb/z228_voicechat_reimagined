@@ -368,6 +368,13 @@ function onMessage(m) {
       S.aiSettings = m;
       if (isAdminSection()) renderSettings();
       return;
+    case "ai-memory":
+      S.aiMemory = m.items || [];
+      if (isAdminSection()) renderSettings();
+      return;
+    case "voice-stats":
+      if (S.onVoiceStats) S.onVoiceStats(m);
+      return;
     case "desktop-invite":
       S.desktopInvite = m;
       if (S.onDesktopInvite) S.onDesktopInvite(m);
@@ -2514,7 +2521,8 @@ function renderSettings() {
   const tab = adminTabs().find(([id]) => id === settingsSection);
   const fn = tab
     ? (c) => {
-        c.append(h("h2", null, tab[1]), tab[2] ? h("p.muted", { style: { marginTop: "-8px" } }, tab[2]) : null);
+        c.append(h("h2", null, tab[1]));
+        if (tab[2]) c.append(h("p.muted", { style: { marginTop: "-8px" } }, tab[2]));
         tab[3](c);
       }
     : { profile: settingsProfile, voice: settingsVoice, look: settingsLook, notify: settingsNotify, keys: settingsKeys, app: settingsApp, admin: settingsAdmin, donate: settingsDonate }[settingsSection];
@@ -3227,6 +3235,110 @@ function settingsAI(c) {
       st.configured ? h("button.btn.btn-danger", { onclick: () => send("ai-config", { kind: "clear", value: false }) }, "Удалить ключ") : null
     )
   );
+
+  // ---- картинки ----
+  const vis = st.vision || {};
+  const presets = [
+    ["Gemini (Google)", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "gemini-2.5-flash", "Ключ бесплатно: aistudio.google.com → Get API key"],
+    ["OpenRouter", "https://openrouter.ai/api/v1/chat/completions", "google/gemini-2.5-flash", "openrouter.ai → Keys; подойдёт любая модель с картинками"],
+    ["OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini", "platform.openai.com → API keys"],
+  ];
+  const vUrl = h("input.input", { placeholder: "https://…/chat/completions", value: vis.url || presets[0][1], autocomplete: "off" });
+  const vModel = h("input.input", { placeholder: "модель", value: vis.model || presets[0][2], autocomplete: "off", style: { maxWidth: "240px" } });
+  const vKey = h("input.input", { type: "password", placeholder: vis.hasKey ? "Ключ сохранён — вставьте новый, чтобы заменить" : "Ключ API", autocomplete: "off" });
+  const hint = h("p.muted.small", { style: { margin: "4px 0 0" } }, (presets.find((p) => p[1] === vUrl.value) || [])[3] || "");
+  const presetRow = h("div.ai-presets");
+  const drawPresets = () => {
+    presetRow.innerHTML = "";
+    for (const [name, url, model, tip] of presets)
+      presetRow.append(
+        h(
+          "button.btn.btn-sm" + (vUrl.value === url ? ".btn-primary" : ""),
+          {
+            onclick: () => {
+              vUrl.value = url;
+              vModel.value = model;
+              hint.textContent = tip;
+              drawPresets();
+            },
+          },
+          name
+        )
+      );
+  };
+  drawPresets();
+  c.append(
+    h("h3", { style: { marginTop: "28px" } }, "Картинки"),
+    h(
+      "p.muted.small",
+      null,
+      "DeepSeek не видит картинки. Чтобы «@ai что на скрине» работало, подключите модель со зрением — любую с OpenAI-совместимым API. " +
+        "Картинку бот берёт из самого сообщения, из сообщения, на которое ответили, или из свежего сообщения выше. " +
+        (vis.configured ? "Сейчас подключено: " + vis.model + "." : "Сейчас не подключено — бот честно скажет, что не видит.")
+    ),
+    presetRow,
+    h("div", { style: { display: "flex", gap: "8px", maxWidth: "560px", marginTop: "8px" } }, vUrl, vModel),
+    h(
+      "div",
+      { style: { display: "flex", gap: "8px", maxWidth: "560px", marginTop: "8px" } },
+      vKey,
+      h("button.btn.btn-primary", { onclick: () => (send("ai-vision", { url: vUrl.value, model: vModel.value, text: vKey.value }), (vKey.value = ""), toast("Модель для картинок сохранена.", "ok")) }, "Сохранить"),
+      vis.hasKey ? h("button.btn.btn-danger", { onclick: () => send("ai-vision", { kind: "clear" }) }, "Отключить") : null
+    ),
+    hint
+  );
+
+  // ---- память ----
+  if (!S.aiMemoryRequested) {
+    S.aiMemoryRequested = true;
+    send("ai-memory");
+  }
+  const mem = S.aiMemory || [];
+  c.append(
+    h("h3", { style: { marginTop: "28px" } }, "Память"),
+    h(
+      "p.muted.small",
+      null,
+      "Бот запоминает про людей, только когда его прямо просят: «@ai запомни, что Вася вечно умирает первым». " +
+        "«@ai забудь всё про Васю» — стирает. До 8 заметок на человека, старые вытесняются."
+    )
+  );
+  if (!mem.length) {
+    c.append(h("p.muted", null, "Пока ничего не помнит."));
+    return;
+  }
+  const byNick = new Map();
+  for (const m of mem) {
+    const k = m.nickname.toLowerCase();
+    if (!byNick.has(k)) byNick.set(k, []);
+    byNick.get(k).push(m);
+  }
+  const list = h("div.admin-list");
+  for (const items of byNick.values()) {
+    const nick = items[0].nickname;
+    const color = nickRoleColor(nick);
+    list.append(
+      h(
+        "div.mem-group",
+        null,
+        h(
+          "div.mem-head",
+          null,
+          h("b", color ? { style: { color } } : null, nick),
+          h("button.btn.btn-link.small", { onclick: () => send("ai-memory-delete", { name: nick }) }, "Забыть всё")
+        ),
+        ...items.map((m) =>
+          h(
+            "div.admin-row",
+            null,
+            h("span.name", { title: `Попросил ${m.createdBy} · ${fmtFull(m.createdAt)}`, style: { whiteSpace: "normal" } }, m.note),
+            h("button.icon-btn.danger", { html: icon("trash", 16), title: "Удалить заметку", onclick: () => send("ai-memory-delete", { id: m.id }) })
+          )
+        )
+      )
+    );
+  }
+  c.append(list);
 }
 
 // ---------- роли ----------
@@ -3568,6 +3680,164 @@ function desktopInviteString(di, code) {
   return `z228://${host}/?${q}`;
 }
 
+// ---------- статистика голосовых каналов ----------
+
+function fmtDur(ms) {
+  const m = Math.floor(ms / 60e3);
+  if (m < 1) return Math.max(1, Math.round(ms / 1000)) + " с";
+  const d = Math.floor(m / 1440);
+  const hh = Math.floor((m % 1440) / 60);
+  const mm = m % 60;
+  if (d) return `${d} д ${hh} ч`;
+  if (hh) return mm ? `${hh} ч ${mm} мин` : `${hh} ч`;
+  return `${mm} мин`;
+}
+
+const nickRoleColor = (nick) => {
+  const r = (S.roles || []).find((x) => x.id === (S.userRoles || {})[nick.toLowerCase()]);
+  return r ? r.color : null;
+};
+
+const STATS_PERIODS = [
+  ["day", "Сегодня"],
+  ["week", "Неделя"],
+  ["month", "Месяц"],
+  ["all", "Всё время"],
+];
+
+function statsPeriodTTL(p) {
+  if (p === "day") {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return Math.max(60, Math.ceil((Date.now() - d.getTime()) / 1000));
+  }
+  return { week: 7 * 86400, month: 30 * 86400 }[p] || 0;
+}
+
+function statsDialog() {
+  let period = lsGet("z228.statsPeriod", "week");
+  if (!STATS_PERIODS.some(([id]) => id === period)) period = "week";
+  const tabs = h("div.stats-tabs");
+  const body = h("div.stats-body", null, h("p.muted", null, "Считаю…"));
+  const ask = () => send("voice-stats", { ttl: statsPeriodTTL(period) });
+  const drawTabs = () => {
+    tabs.innerHTML = "";
+    for (const [id, label] of STATS_PERIODS)
+      tabs.append(
+        h(
+          "button.stats-tab" + (id === period ? ".sel" : ""),
+          {
+            onclick: () => {
+              period = id;
+              lsSet("z228.statsPeriod", id);
+              drawTabs();
+              ask();
+            },
+          },
+          label
+        )
+      );
+  };
+  drawTabs();
+  S.onVoiceStats = (m) => drawStats(body, m.stats);
+  const back = modal({ title: "Кто где сидел", body: [tabs, body], okText: "Закрыть", cancelText: null, onOk: () => (S.onVoiceStats = null) });
+  back.querySelector(".modal").classList.add("modal-wide");
+  // закрытие кликом мимо или Esc тоже снимает обработчик
+  new MutationObserver((_, obs) => {
+    if (!back.isConnected) {
+      S.onVoiceStats = null;
+      obs.disconnect();
+    }
+  }).observe(document.body, { childList: true });
+  ask();
+}
+
+function drawStats(body, st) {
+  body.innerHTML = "";
+  if (!st || !st.users.length) {
+    body.append(h("div.stats-empty", null, h("div.stats-empty-emoji", null, "🦗"), h("p", null, "За этот период в голосовых никто не сидел.")));
+    return;
+  }
+  const top = st.users[0].ms || 1;
+  const medals = ["🥇", "🥈", "🥉"];
+  body.append(
+    h(
+      "div.stats-summary",
+      null,
+      h("div", null, h("b", null, fmtDur(st.totalMs)), h("span", null, "всего в голосовых")),
+      h("div", null, h("b", null, String(st.users.length)), h("span", null, "человек")),
+      h("div", null, h("b", null, st.channels[0] ? st.channels[0].name : "—"), h("span", null, "самый живой канал"))
+    ),
+    h("h3.stats-h", null, "Люди")
+  );
+  const list = h("div.stats-list");
+  st.users.forEach((u, i) => {
+    const color = nickRoleColor(u.nickname);
+    const chans = u.channels.map((c) => `${c.name} ${fmtDur(c.ms)}`).join(" · ");
+    list.append(
+      h(
+        "div.stats-row",
+        { title: `Заходов: ${u.sessions} · самый долгий: ${fmtDur(u.longest)} · последний раз: ${fmtFull(u.lastAt)}` },
+        h("span.stats-rank", null, medals[i] || String(i + 1)),
+        avatar(u.nickname, 32),
+        h(
+          "div.stats-main",
+          null,
+          h("div.stats-line", null, h("span.stats-nick", color ? { style: { color } } : null, u.nickname), h("span.stats-time", null, fmtDur(u.ms))),
+          h("div.stats-bar", null, h("i", { style: { width: Math.max(2, (u.ms / top) * 100) + "%", background: color || "" } })),
+          h("div.stats-sub", null, chans + ` · заходов: ${u.sessions}`)
+        )
+      )
+    );
+  });
+  body.append(list);
+
+  if (st.channels.length > 1) {
+    const ctop = st.channels[0].ms || 1;
+    const cl = h("div.stats-list");
+    for (const c of st.channels)
+      cl.append(
+        h(
+          "div.stats-row.stats-row-ch",
+          null,
+          h("span.stats-rank", { html: icon("speaker", 18) }),
+          h(
+            "div.stats-main",
+            null,
+            h("div.stats-line", null, h("span.stats-nick", null, c.name), h("span.stats-time", null, fmtDur(c.ms))),
+            h("div.stats-bar", null, h("i", { style: { width: Math.max(2, (c.ms / ctop) * 100) + "%" } })),
+            h("div.stats-sub", null, `людей: ${c.people}`)
+          )
+        )
+      );
+    body.append(h("h3.stats-h", null, "Каналы"), cl);
+  }
+
+  if (st.recent.length) {
+    const t = (ms) => new Date(ms).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    const day = (ms) => {
+      const d = new Date(ms);
+      if (d.toDateString() === new Date().toDateString()) return "";
+      return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) + ", ";
+    };
+    const log = h("div.stats-log");
+    for (const r of st.recent) {
+      const color = nickRoleColor(r.nickname);
+      log.append(
+        h(
+          "div.stats-log-row",
+          null,
+          h("span.stats-nick", color ? { style: { color } } : null, r.nickname),
+          h("span.muted", null, " в «" + r.channel + "» "),
+          h("span.stats-when", null, day(r.start) + t(r.start) + " – " + (r.active ? "сейчас" : t(r.end))),
+          r.active ? h("span.stats-live", null, "в эфире") : h("span.muted.small", null, " · " + fmtDur(r.end - r.start))
+        )
+      );
+    }
+    body.append(h("h3.stats-h", null, "Недавно"), log);
+  }
+}
+
 function desktopAppDialog() {
   const status = h("p.muted.small", { style: { margin: "8px 0 0" } }, "Ищу последнюю версию…");
   const dl = h("a.btn.btn-primary", { href: `${DESKTOP_RELEASES}/latest`, target: "_blank", rel: "noopener", style: { display: "inline-flex", alignItems: "center", gap: "8px", textDecoration: "none" } });
@@ -3809,6 +4079,7 @@ function bindUi() {
             }, { iconName: "download" }),
           ]
         : []),
+      menuItem("Статистика голоса", statsDialog, { iconName: "chart" }),
       ...(isDesktop ? [] : [menuItem("Приложение для Windows", desktopAppDialog, { iconName: "download" })]),
       menuItem("Настройки", () => openSettings("voice"), { iconName: "gear" }),
       menuItem("Поддержать", () => openSettings("donate"), { iconName: "heart" }),

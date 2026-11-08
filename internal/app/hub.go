@@ -62,7 +62,9 @@ func (h *Hub) SetCertSPKI(pin string) {
 }
 
 func NewHub(opts Options) *Hub {
-	return &Hub{opts: opts, sessions: map[string]*session{}, byNick: map[string]*session{}, mutedBy: map[string]bool{}, guard: newGuard(), ai: newAIState()}
+	h := &Hub{opts: opts, sessions: map[string]*session{}, byNick: map[string]*session{}, mutedBy: map[string]bool{}, guard: newGuard(), ai: newAIState()}
+	go h.voiceTouchLoop()
+	return h
 }
 
 type session struct {
@@ -91,6 +93,8 @@ type session struct {
 	qAt          time.Time
 	peer         *sfu.Peer
 	joinID       string // id текущего входа в голос; сигналинг со старым id игнорируется
+	vsID         int64  // идущая запись статистики голоса (0 — нет)
+	vsCh         int64  // канал этой записи
 
 	// антиспам (только из read-горутины)
 	bucket     float64
@@ -133,6 +137,8 @@ type inMsg struct {
 	T           float64                  `json:"t"`
 	MaxUses     int                      `json:"maxUses"` // ключ: сколько людей могут войти (1 — разовый)
 	TTL         int64                    `json:"ttl"`     // ключ: срок действия, секунды (0 — бессрочный)
+	URL         string                   `json:"url"`     // ИИ для картинок: адрес OpenAI-совместимого API
+	Model       string                   `json:"model"`
 }
 
 type userView struct {
@@ -455,6 +461,7 @@ func (h *Hub) dropSession(s *session) {
 	if peer != nil {
 		peer.Close()
 	}
+	h.trackVoice(s, 0)
 	s.requestClose()
 }
 
@@ -479,6 +486,7 @@ func (h *Hub) unregister(s *session) {
 	if peer != nil {
 		peer.Close()
 	}
+	h.trackVoice(s, 0)
 	if s.nickname != "" {
 		if seen, err := h.opts.Store.Seen(context.Background(), s.nickname); err == nil {
 			h.broadcast("member", map[string]any{"member": seen}, nil)
@@ -711,6 +719,9 @@ func (h *Hub) handle(s *session, m *inMsg) {
 	case "dm-open":
 		h.openDM(s, m)
 
+	case "voice-stats":
+		h.sendVoiceStats(s, m.TTL)
+
 	case "dms":
 		h.sendDMs(strings.ToLower(s.nickname))
 
@@ -816,7 +827,7 @@ func (h *Hub) handle(s *session, m *inMsg) {
 
 	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute", "move-voice",
 		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign", "role-perms", "backup-download",
-		"ban", "unban", "bans", "ai-settings", "ai-config":
+		"ban", "unban", "bans", "ai-settings", "ai-config", "ai-vision", "ai-memory", "ai-memory-delete":
 		if !h.can(s, cmdPerm[m.Type]) {
 			s.sendError("Недостаточно прав.")
 			return
@@ -825,7 +836,7 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		case "ban", "unban", "bans":
 			h.handleBans(s, m)
 			return
-		case "ai-settings", "ai-config":
+		case "ai-settings", "ai-config", "ai-vision", "ai-memory", "ai-memory-delete":
 			h.handleAIConfig(s, m)
 			return
 		}
@@ -881,6 +892,7 @@ func (h *Hub) voiceJoin(s *session, channelID int64, joinID string) {
 		h.mu.Unlock()
 		if changed {
 			s.send("voice-left", map[string]any{"joinId": joinID})
+			h.trackVoice(s, 0)
 			h.broadcastPresence()
 		}
 	}
@@ -898,6 +910,7 @@ func (h *Hub) voiceJoin(s *session, channelID int64, joinID string) {
 	if err != nil {
 		log.Printf("RTC join: %v", err)
 		signal("voice-left", map[string]any{"message": "Не удалось подключиться к голосу."})
+		h.trackVoice(s, 0)
 		return
 	}
 	h.mu.Lock()
@@ -907,6 +920,7 @@ func (h *Hub) voiceJoin(s *session, channelID int64, joinID string) {
 	s.screen = false
 	s.camera = false
 	h.mu.Unlock()
+	h.trackVoice(s, channelID)
 	h.broadcastPresence()
 }
 

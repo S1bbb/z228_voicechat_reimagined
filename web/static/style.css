@@ -2906,3 +2906,176 @@ body.dragging-user .channel {
     bottom: 10px;
   }
 }
+
+/* ---------- статистика голоса ---------- */
+.modal.modal-wide {
+  width: min(640px, 100%);
+}
+.stats-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.stats-tab {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.stats-tab:hover {
+  color: var(--interactive-hover);
+}
+.stats-tab.sel {
+  background: var(--brand);
+  color: var(--on-brand);
+}
+.stats-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.stats-summary > div {
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.stats-summary b {
+  font-size: 18px;
+  color: var(--header-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stats-summary span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.stats-h {
+  margin: 20px 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.stats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stats-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+}
+.stats-rank {
+  width: 24px;
+  font-weight: 700;
+  color: var(--text-muted);
+  flex: none;
+  display: inline-flex;
+  justify-content: center;
+}
+.stats-main {
+  flex: 1;
+  min-width: 0;
+}
+.stats-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.stats-nick {
+  font-weight: 600;
+  color: var(--header-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stats-time {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.stats-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-modifier-hover);
+  margin: 6px 0 4px;
+  overflow: hidden;
+}
+.stats-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--brand);
+  transition: width 0.4s ease;
+}
+.stats-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stats-log {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+.stats-log-row {
+  padding: 4px 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stats-when {
+  font-variant-numeric: tabular-nums;
+}
+.stats-live {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--success);
+  color: #062a1d;
+  font-size: 11px;
+  font-weight: 700;
+}
+.stats-empty {
+  text-align: center;
+  padding: 24px 0;
+  color: var(--text-muted);
+}
+.stats-empty-emoji {
+  font-size: 40px;
+}
+@media (max-width: 520px) {
+  .stats-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- ИИ: пресеты и память ---------- */
+.ai-presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mem-group {
+  margin-bottom: 10px;
+}
+.mem-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 4px 2px;
+}
