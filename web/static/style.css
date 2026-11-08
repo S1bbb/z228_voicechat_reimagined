@@ -2352,3 +2352,203 @@ body.dragging-user .channel {
   text-align: center;
   color: var(--text-link, var(--brand));
 }
+
+/* ---------- ЛС, «не в сети», бот, права ролей ---------- */
+
+.channel.dm .avatar {
+  flex: none;
+}
+.dm-at {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-muted);
+}
+.member.offline {
+  opacity: 0.45;
+}
+.member.offline:hover {
+  opacity: 0.8;
+}
+.bot-tag {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--brand);
+  color: #0b1d22;
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: 2px;
+}
+.perm-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.admin-row:has(.perm-chips) {
+  flex-wrap: wrap;
+}
+.admin-row .perm-chips {
+  order: 10;
+  flex: 1 1 100%;
+  padding-left: 18px;
+}
+.perm-chip {
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--bg-tertiary, #444);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.perm-chip.on {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #0b1d22;
+}
+.perm-chip.danger.on {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.admin-row.dead {
+  opacity: 0.5;
+}
+
+/* ---------- «Что нового» ---------- */
+
+.whatsnew {
+  width: min(620px, 100%);
+  max-height: 92vh;
+  overflow-y: auto;
+  border-radius: 16px;
+  background: var(--bg-primary);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  animation: whatsnew-in 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+@keyframes whatsnew-in {
+  from {
+    transform: translateY(24px) scale(0.96);
+    opacity: 0;
+  }
+}
+.whatsnew-hero {
+  position: relative;
+  overflow: hidden;
+  padding: 32px 28px 26px;
+  text-align: center;
+  color: #fff;
+  background: linear-gradient(45deg, #45e3f7 0%, #5b5cf0 50%, #c03fe6 100%);
+}
+.whatsnew-hero h2 {
+  margin: 6px 0 4px;
+  font-size: 26px;
+  color: #fff;
+}
+.whatsnew-hero p {
+  margin: 0;
+  opacity: 0.9;
+}
+.whatsnew-logo {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.3));
+  animation: whatsnew-float 3s ease-in-out infinite;
+}
+@keyframes whatsnew-float {
+  50% {
+    transform: translateY(-5px) rotate(-3deg);
+  }
+}
+.whatsnew-kicker {
+  position: relative;
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+.whatsnew-dots i {
+  position: absolute;
+  left: calc(var(--i) * 7.3%);
+  top: calc(10% + mod(var(--i) * 37, 80) * 1%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  opacity: 0.35;
+  animation: whatsnew-twinkle 2.4s ease-in-out infinite;
+  animation-delay: calc(var(--i) * -0.37s);
+}
+.whatsnew-dots i:nth-child(3n) {
+  width: 10px;
+  height: 10px;
+  opacity: 0.2;
+}
+@keyframes whatsnew-twinkle {
+  50% {
+    transform: translateY(-8px);
+    opacity: 0.6;
+  }
+}
+.whatsnew-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px;
+  padding: 20px;
+}
+.whatsnew-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid color-mix(in srgb, var(--c) 25%, transparent);
+  animation: whatsnew-item 0.4s ease both;
+}
+@keyframes whatsnew-item {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+}
+.whatsnew-item b {
+  display: block;
+  margin-bottom: 2px;
+}
+.whatsnew-item span:last-child {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+.whatsnew-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: var(--c);
+  background: color-mix(in srgb, var(--c) 16%, transparent);
+}
+.whatsnew-foot {
+  display: flex;
+  justify-content: center;
+  padding: 0 20px 22px;
+}
+.whatsnew-foot .btn {
+  min-width: 200px;
+  height: 42px;
+  font-size: 15px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .whatsnew,
+  .whatsnew-item,
+  .whatsnew-logo,
+  .whatsnew-dots i {
+    animation: none;
+  }
+}

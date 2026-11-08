@@ -51,6 +51,7 @@ type Hub struct {
 	mutedBy  map[string]bool     // ники, заглушённые админом (до перезапуска сервера)
 	guard    *guard              // защита от перебора ключа и пароля админа
 	certSPKI string              // отпечаток ключа TLS-сертификата для десктоп-приложения ("" — не нужен)
+	ai       *aiState
 }
 
 // SetCertSPKI задаёт отпечаток SPKI сертификата сервера (вызывается до приёма соединений).
@@ -61,7 +62,7 @@ func (h *Hub) SetCertSPKI(pin string) {
 }
 
 func NewHub(opts Options) *Hub {
-	return &Hub{opts: opts, sessions: map[string]*session{}, byNick: map[string]*session{}, mutedBy: map[string]bool{}, guard: newGuard()}
+	return &Hub{opts: opts, sessions: map[string]*session{}, byNick: map[string]*session{}, mutedBy: map[string]bool{}, guard: newGuard(), ai: newAIState()}
 }
 
 type session struct {
@@ -130,6 +131,8 @@ type inMsg struct {
 	SDP         string                   `json:"sdp"`
 	Candidate   *webrtc.ICECandidateInit `json:"candidate"`
 	T           float64                  `json:"t"`
+	MaxUses     int                      `json:"maxUses"` // ключ: сколько людей могут войти (1 — разовый)
+	TTL         int64                    `json:"ttl"`     // ключ: срок действия, секунды (0 — бессрочный)
 }
 
 type userView struct {
@@ -319,7 +322,7 @@ var nickBad = regexp.MustCompile(`[\x00-\x1f\x7f<>]`)
 
 func normalizeNick(n string) (string, bool) {
 	n = strings.Join(strings.Fields(n), " ")
-	if n == "" || len([]rune(n)) > 32 || nickBad.MatchString(n) {
+	if n == "" || len([]rune(n)) > 32 || nickBad.MatchString(n) || strings.EqualFold(n, botNick) {
 		return "", false
 	}
 	return n, true
@@ -328,38 +331,48 @@ func normalizeNick(n string) (string, bool) {
 func (h *Hub) register(s *session, m *inMsg) bool {
 	ctx := context.Background()
 	inviteCode := ""
-	adminByToken := h.opts.AdminPassword != "" && hmac.Equal([]byte(m.AdminToken), []byte(h.adminToken(strings.TrimSpace(m.ClientID))))
-	// админ (валидный токен этого браузера) входит без ключа — чтобы не запереть себя снаружи
-	if !adminByToken && h.accessRequired(ctx) {
-		if h.guard.blocked(s.ip) {
-			s.send("hello-rejected", map[string]any{"reason": "key", "message": "Слишком много неверных попыток. Попробуйте через 15 минут."})
-			return false
-		}
-		code, ok := h.checkKey(ctx, m.Password)
-		if !ok {
-			msg := "Неверный ключ доступа."
-			if strings.TrimSpace(m.Password) == "" {
-				msg = "Сервер закрыт: нужен ключ доступа. Попросите у админа ссылку-приглашение."
-			} else if h.guard.fail(s.ip) {
-				log.Printf("отказ входа (%s): перебор ключа — IP заблокирован на 15 минут", s.ip)
-			} else {
-				log.Printf("отказ входа (%s): неверный ключ доступа", s.ip)
-			}
-			s.send("hello-rejected", map[string]any{"reason": "key", "message": msg})
-			return false
-		}
-		inviteCode = code
-	}
 	nick, ok := normalizeNick(m.Nickname)
 	if !ok {
 		log.Printf("отказ входа (%s): плохой ник %q", s.conn.RemoteAddr(), m.Nickname)
-		s.send("hello-rejected", map[string]any{"reason": "nickname", "message": "Ник: от 1 до 32 символов, без < >."})
+		s.send("hello-rejected", map[string]any{"reason": "nickname", "message": "Ник: от 1 до 32 символов, без < > (и не AI — так зовут бота)."})
 		return false
 	}
 	clientID := strings.TrimSpace(m.ClientID)
 	if len(clientID) < 8 || len(clientID) > 64 {
 		s.send("hello-rejected", map[string]any{"reason": "client", "message": "Некорректный clientId."})
 		return false
+	}
+	adminByToken := h.opts.AdminPassword != "" && hmac.Equal([]byte(m.AdminToken), []byte(h.adminToken(clientID)))
+	if !adminByToken {
+		if banned, err := h.opts.Store.IsBanned(ctx, nick, clientID); err != nil || banned {
+			log.Printf("отказ входа (%s): %s забанен", s.ip, nick)
+			s.send("hello-rejected", map[string]any{"reason": "banned", "message": "Вы забанены на этом сервере."})
+			return false
+		}
+	}
+	// админ (валидный токен этого браузера) входит без ключа — чтобы не запереть себя снаружи
+	if !adminByToken && h.accessRequired(ctx) {
+		if h.guard.blocked(s.ip) {
+			s.send("hello-rejected", map[string]any{"reason": "key", "message": "Слишком много неверных попыток. Попробуйте через 15 минут."})
+			return false
+		}
+		code, msg := h.checkKey(ctx, m.Password, clientID, nick)
+		if msg != "" {
+			if strings.TrimSpace(m.Password) == "" {
+				msg = "Сервер закрыт: нужен ключ доступа. Попросите у админа ссылку-приглашение."
+			} else if msg == msgBadKey {
+				if h.guard.fail(s.ip) {
+					log.Printf("отказ входа (%s): перебор ключа — IP заблокирован на 15 минут", s.ip)
+				} else {
+					log.Printf("отказ входа (%s): неверный ключ доступа", s.ip)
+				}
+			} else {
+				log.Printf("отказ входа (%s, %s): %s", s.ip, nick, msg)
+			}
+			s.send("hello-rejected", map[string]any{"reason": "key", "message": msg})
+			return false
+		}
+		inviteCode = code
 	}
 
 	key := strings.ToLower(nick)
@@ -400,6 +413,12 @@ func (h *Hub) register(s *session, m *inMsg) bool {
 	if err != nil {
 		log.Printf("avatars: %v", err)
 	}
+	seen, err := h.opts.Store.Seen(ctx, nick)
+	if err != nil {
+		log.Printf("members: %v", err)
+	}
+	members, _ := h.opts.Store.Members(ctx, 300)
+	dms, _ := h.opts.Store.DMsOf(ctx, nick)
 	h.mu.Lock()
 	users := h.usersLocked()
 	isAdmin := s.admin
@@ -415,9 +434,14 @@ func (h *Hub) register(s *session, m *inMsg) bool {
 		"avatars":        avatars,
 		"roles":          roles,
 		"userRoles":      userRoles,
+		"members":        members,
+		"dms":            dms,
+		"bot":            botNick,
+		"perms":          allPerms,
 	})
 	log.Printf("+ %s", nick)
 	h.broadcastPresence()
+	h.broadcast("member", map[string]any{"member": seen}, s)
 	return true
 }
 
@@ -454,6 +478,11 @@ func (h *Hub) unregister(s *session) {
 	h.mu.Unlock()
 	if peer != nil {
 		peer.Close()
+	}
+	if s.nickname != "" {
+		if seen, err := h.opts.Store.Seen(context.Background(), s.nickname); err == nil {
+			h.broadcast("member", map[string]any{"member": seen}, nil)
+		}
 	}
 	if removed {
 		log.Printf("- %s", s.nickname)
@@ -537,8 +566,7 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		s.send("pong", map[string]any{"t": m.T})
 
 	case "history":
-		ch, err := st.Channel(ctx, m.ChannelID)
-		if err != nil || ch.Kind != "text" {
+		if _, _, ok := h.channelAccess(ctx, s, m.ChannelID); !ok {
 			s.sendError("Канал не найден.")
 			return
 		}
@@ -555,8 +583,8 @@ func (h *Hub) handle(s *session, m *inMsg) {
 			s.sendError("Слишком часто, подождите немного.")
 			return
 		}
-		ch, err := st.Channel(ctx, m.ChannelID)
-		if err != nil || ch.Kind != "text" {
+		_, dmMembers, ok := h.channelAccess(ctx, s, m.ChannelID)
+		if !ok {
 			s.sendError("Канал не найден.")
 			return
 		}
@@ -571,7 +599,8 @@ func (h *Hub) handle(s *session, m *inMsg) {
 			s.sendError("Не удалось отправить сообщение.")
 			return
 		}
-		h.broadcast("message", map[string]any{"message": msg, "nonce": m.Nonce, "from": s.id}, nil)
+		h.broadcastIn(dmMembers, "message", map[string]any{"message": msg, "nonce": m.Nonce, "from": s.id}, nil)
+		h.maybeAI(s, msg, dmMembers)
 
 	case "edit":
 		msg, err := st.EditMessage(ctx, m.ID, s.nickname, clampText(m.Text))
@@ -579,22 +608,37 @@ func (h *Hub) handle(s *session, m *inMsg) {
 			s.sendError(storeErr(err, "Не удалось изменить сообщение."))
 			return
 		}
-		h.broadcast("message-update", map[string]any{"message": msg}, nil)
+		h.broadcastIn(h.dmMembersOf(ctx, msg.ChannelID), "message-update", map[string]any{"message": msg}, nil)
 
 	case "delete":
-		h.mu.Lock()
-		admin := s.admin
-		h.mu.Unlock()
-		msg, err := st.DeleteMessage(ctx, m.ID, s.nickname, admin)
+		orig, err := st.Message(ctx, m.ID)
 		if err != nil {
 			s.sendError(storeErr(err, "Не удалось удалить сообщение."))
 			return
 		}
-		h.broadcast("message-delete", map[string]any{"id": msg.ID, "channelId": msg.ChannelID}, nil)
+		dmMembers := h.dmMembersOf(ctx, orig.ChannelID)
+		// в ЛС чужие сообщения не удаляет никто; в каналах — модераторы с правом «Удалять сообщения»
+		force := dmMembers == nil && orig.Author != s.nickname && h.can(s, PermMessages)
+		msg, err := st.DeleteMessage(ctx, m.ID, s.nickname, force)
+		if err != nil {
+			s.sendError(storeErr(err, "Не удалось удалить сообщение."))
+			return
+		}
+		h.broadcastIn(dmMembers, "message-delete", map[string]any{"id": msg.ID, "channelId": msg.ChannelID}, nil)
 
 	case "react":
 		emoji := strings.TrimSpace(m.Emoji)
 		if emoji == "" || len(emoji) > 32 || !s.allow(0.5) {
+			return
+		}
+		orig, err := st.Message(ctx, m.ID)
+		if err != nil {
+			s.sendError(storeErr(err, "Не удалось поставить реакцию."))
+			return
+		}
+		_, dmMembers, ok := h.channelAccess(ctx, s, orig.ChannelID)
+		if !ok {
+			s.sendError("Канал не найден.")
 			return
 		}
 		msg, err := st.ToggleReaction(ctx, m.ID, emoji, s.nickname)
@@ -602,7 +646,7 @@ func (h *Hub) handle(s *session, m *inMsg) {
 			s.sendError(storeErr(err, "Не удалось поставить реакцию."))
 			return
 		}
-		h.broadcast("message-update", map[string]any{"message": msg}, nil)
+		h.broadcastIn(dmMembers, "message-update", map[string]any{"message": msg}, nil)
 
 	case "set-avatar":
 		if !s.allow(2) {
@@ -660,7 +704,15 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		h.broadcast("quality", map[string]any{"userId": s.id, "quality": q}, nil)
 
 	case "typing":
-		h.broadcast("typing", map[string]any{"channelId": m.ChannelID, "userId": s.id, "nickname": s.nickname}, s)
+		if _, dmMembers, ok := h.channelAccess(ctx, s, m.ChannelID); ok {
+			h.broadcastIn(dmMembers, "typing", map[string]any{"channelId": m.ChannelID, "userId": s.id, "nickname": s.nickname}, s)
+		}
+
+	case "dm-open":
+		h.openDM(s, m)
+
+	case "dms":
+		h.sendDMs(strings.ToLower(s.nickname))
 
 	case "voice-join":
 		h.voiceJoin(s, m.ChannelID, m.JoinID)
@@ -763,12 +815,18 @@ func (h *Hub) handle(s *session, m *inMsg) {
 		h.broadcastPresence()
 
 	case "channel-create", "channel-rename", "channel-delete", "channel-move", "kick", "disconnect-voice", "server-mute", "move-voice",
-		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign", "backup-download":
-		h.mu.Lock()
-		admin := s.admin
-		h.mu.Unlock()
-		if !admin {
-			s.sendError("Нужны права администратора.")
+		"invites", "invite-create", "invite-delete", "role-create", "role-delete", "role-move", "role-assign", "role-perms", "backup-download",
+		"ban", "unban", "bans", "ai-settings", "ai-config":
+		if !h.can(s, cmdPerm[m.Type]) {
+			s.sendError("Недостаточно прав.")
+			return
+		}
+		switch m.Type {
+		case "ban", "unban", "bans":
+			h.handleBans(s, m)
+			return
+		case "ai-settings", "ai-config":
+			h.handleAIConfig(s, m)
 			return
 		}
 		if m.Type == "backup-download" {

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"zalupa228local/internal/store"
 )
 
 // Ключи доступа. Сервер закрыт, если задан общий ключ (SERVER_PASSWORD / -password)
@@ -98,24 +100,32 @@ func (h *Hub) accessRequired(ctx context.Context) bool {
 	return n > 0
 }
 
-// checkKey проверяет ключ; возвращает код приглашения ("" для общего ключа) и успех.
-func (h *Hub) checkKey(ctx context.Context, key string) (string, bool) {
+const msgBadKey = "Неверный ключ доступа."
+
+// checkKey проверяет ключ; возвращает код приглашения ("" для общего ключа) и текст отказа ("" — пускаем).
+func (h *Hub) checkKey(ctx context.Context, key, clientID, nick string) (string, string) {
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return "", false
+		return "", msgBadKey
 	}
 	if h.opts.ServerPassword != "" && subtle.ConstantTimeCompare([]byte(key), []byte(h.opts.ServerPassword)) == 1 {
-		return "", true
+		return "", ""
 	}
-	ok, err := h.opts.Store.UseInvite(ctx, strings.ToLower(key))
+	code := strings.ToLower(key)
+	res, err := h.opts.Store.UseInvite(ctx, code, clientID, nick)
 	if err != nil {
 		log.Printf("invite: %v", err)
-		return "", false
+		return "", msgBadKey
 	}
-	if ok {
-		return strings.ToLower(key), true
+	switch res {
+	case store.InviteOK:
+		return code, ""
+	case store.InviteExpired:
+		return "", "Срок действия ключа истёк. Попросите у админа новую ссылку."
+	case store.InviteUsedUp:
+		return "", "Это разовая ссылка, и по ней уже вошёл другой человек. Попросите у админа свою."
 	}
-	return "", false
+	return "", msgBadKey
 }
 
 // inviteCode — 16 символов без похожих друг на друга букв/цифр (~79 бит).
@@ -151,7 +161,12 @@ func (h *Hub) handleInvites(s *session, m *inMsg) {
 		if r := []rune(label); len(r) > 40 {
 			label = string(r[:40])
 		}
-		if err := h.opts.Store.CreateInvite(ctx, inviteCode(), label, s.nickname); err != nil {
+		maxUses := max(0, min(m.MaxUses, 1000))
+		var expires int64
+		if m.TTL > 0 {
+			expires = time.Now().Add(time.Duration(min(m.TTL, 366*24*3600)) * time.Second).UnixMilli()
+		}
+		if err := h.opts.Store.CreateInvite(ctx, inviteCode(), label, s.nickname, maxUses, expires); err != nil {
 			s.sendError("Не удалось создать ключ.")
 			return
 		}
@@ -205,7 +220,9 @@ func (h *Hub) handleRoles(s *session, m *inMsg) {
 			s.sendError("Укажите название роли.")
 			return
 		}
-		err = st.CreateRole(ctx, name, strings.ToLower(color))
+		err = st.CreateRole(ctx, name, strings.ToLower(color), validPerms(m.Keys))
+	case "role-perms":
+		err = st.SetRolePerms(ctx, m.ID, validPerms(m.Keys))
 	case "role-delete":
 		err = st.DeleteRole(ctx, m.ID)
 	case "role-move":

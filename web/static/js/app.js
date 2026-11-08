@@ -3,6 +3,7 @@ import { icon } from "./icons.js";
 import { Voice, micTest, sfx, setSfxOutput, rtcConstructor, rtcDiagnostics, qualityLevel } from "./voice.js";
 import { isDesktop, initDesktop, desktopInfo, desktopPtt, desktopBinding, refreshInfo as refreshDesktopInfo, invoke as desktopInvoke, stateChanged as desktopStateChanged } from "./desktop.js";
 import { EMOJI_GROUPS, QUICK_REACTIONS } from "./emoji.js";
+import { maybeShowWhatsNew } from "./whatsnew.js";
 
 // ============================================================ состояние
 
@@ -30,6 +31,7 @@ const S = {
   settings: { ...DEFAULT_SETTINGS, ...lsGet("z228.settings", {}) },
   clientId: lsGet("z228.clientId", "") || randomId(16),
   nick: lsGet("z228.nick", ""),
+  returning: !!lsGet("z228.nick", ""), // заходил сюда раньше (для «Что нового»)
   password: lsGet("z228.password", ""),
   adminToken: lsGet("z228.adminToken", ""),
   ws: null,
@@ -113,7 +115,49 @@ function saveSettings() {
 }
 
 const userById = (id) => S.users.find((u) => u.id === id);
-const channelById = (id) => S.channels.find((c) => c.id === id);
+const channelById = (id) => S.channels.find((c) => c.id === id) || dmChannel(id);
+// личный канал в виде канала: {id, kind: "dm", name: собеседник}
+const dmChannel = (id) => {
+  const d = (S.dms || []).find((x) => x.id === id);
+  return d ? { id: d.id, kind: "dm", name: d.peer, peer: d.peer } : undefined;
+};
+const isTextLike = (ch) => !!ch && (ch.kind === "text" || ch.kind === "dm");
+const isDm = (id) => !!(S.dms || []).find((x) => x.id === id);
+
+// ---------- права ролей ----------
+const PERM_ORDER = ["ai", "messages", "mute", "kick", "channels", "invites", "admin"];
+const PERM_LABELS = {
+  ai: "Звать ИИ",
+  messages: "Удалять чужие сообщения",
+  mute: "Мьютить и двигать в голосе",
+  kick: "Выгонять и банить",
+  channels: "Каналы",
+  invites: "Ключи доступа",
+  admin: "Полный админ",
+};
+function myPerms() {
+  if (!S.me) return [];
+  const r = (S.roles || []).find((x) => x.id === (S.userRoles || {})[S.me.nickname.toLowerCase()]);
+  return (r && r.perms) || [];
+}
+function can(p) {
+  if (S.admin) return true;
+  const ps = myPerms();
+  return ps.includes("admin") || ps.includes(p);
+}
+// есть ли хоть какие-то права управления (тогда видна «Администрирование»)
+const canManage = () => S.admin || myPerms().some((p) => p !== "ai");
+
+// «был 5 мин назад»
+function agoText(ts) {
+  const d = Date.now() - ts;
+  if (d < 60e3) return "только что";
+  if (d < 3600e3) return Math.floor(d / 60e3) + " мин назад";
+  if (d < 86400e3) return Math.floor(d / 3600e3) + " ч назад";
+  if (d < 2 * 86400e3) return "вчера";
+  if (d < 30 * 86400e3) return Math.floor(d / 86400e3) + " дн. назад";
+  return "давно";
+}
 const textChannels = () => S.channels.filter((c) => c.kind === "text");
 const voiceChannels = () => S.channels.filter((c) => c.kind === "voice");
 const voiceMembers = (chId) => S.users.filter((u) => u.voiceChannelId === chId);
@@ -186,7 +230,7 @@ function onMessage(m) {
       return onReady(m);
     case "hello-rejected":
       disconnect();
-      if (m.reason === "key" || m.reason === "password") {
+      if (m.reason === "key" || m.reason === "password" || m.reason === "banned") {
         S.password = "";
         lsSet("z228.password", "");
       }
@@ -199,11 +243,11 @@ function onMessage(m) {
     case "kicked":
       lsSet("z228.voice", 0);
       disconnect();
-      if (m.reason === "key") {
+      if (m.reason === "key" || m.reason === "banned") {
         S.password = "";
         lsSet("z228.password", "");
       }
-      showLogin(m.message || "Вас отключили.", m.reason === "key");
+      showLogin(m.message || "Вас отключили.", m.reason === "key" || m.reason === "banned");
       return;
     case "error":
       toast(m.message, "error");
@@ -217,7 +261,7 @@ function onMessage(m) {
       return;
     case "channels":
       S.channels = m.channels;
-      if (!channelById(S.textId) || channelById(S.textId).kind !== "text") selectText((textChannels()[0] || {}).id);
+      if (!isTextLike(channelById(S.textId))) selectText((textChannels()[0] || {}).id);
       renderAll();
       return;
     case "history":
@@ -298,6 +342,31 @@ function onMessage(m) {
       S.invites = m;
       if (settingsSection === "admin") renderSettings();
       return;
+    case "dms":
+      onDms(m.dms || []);
+      return;
+    case "dm-opened":
+      selectText(m.id);
+      return;
+    case "member": {
+      const i = S.members.findIndex((x) => x.nickname.toLowerCase() === m.member.nickname.toLowerCase());
+      if (i >= 0) S.members[i] = m.member;
+      else S.members.unshift(m.member);
+      renderMembers();
+      return;
+    }
+    case "member-gone":
+      S.members = S.members.filter((x) => x.nickname.toLowerCase() !== m.nickname.toLowerCase());
+      renderMembers();
+      return;
+    case "bans":
+      S.bans = m.bans || [];
+      if (settingsSection === "admin") renderSettings();
+      return;
+    case "ai-settings":
+      S.aiSettings = m;
+      if (settingsSection === "admin") renderSettings();
+      return;
     case "desktop-invite":
       S.desktopInvite = m;
       if (S.onDesktopInvite) S.onDesktopInvite(m);
@@ -324,6 +393,10 @@ function onReady(m) {
   S.roles = m.roles || [];
   S.userRoles = m.userRoles || {};
   S.users = m.users || [];
+  S.members = m.members || [];
+  S.bot = m.bot || "AI";
+  S.dms = [];
+  onDms(m.dms || [], true);
   S.maxUploadBytes = m.maxUploadBytes || S.maxUploadBytes;
   S.msgs.clear();
   S.prevVoiceMembers = null;
@@ -335,9 +408,14 @@ function onReady(m) {
   $("#serverSlogan").textContent = S.server.slogan || "";
   $("#serverSlogan").hidden = !S.server.slogan;
 
-  if (!channelById(S.textId) || channelById(S.textId).kind !== "text") S.textId = (textChannels()[0] || {}).id || 0;
+  if (!isTextLike(channelById(S.textId))) S.textId = (textChannels()[0] || {}).id || 0;
   selectText(S.textId, S.view !== "text");
   renderAll();
+  if (!S.newsChecked) {
+    // «Что нового» — один раз за загрузку страницы, только тем, кто бывал тут раньше
+    S.newsChecked = true;
+    setTimeout(() => maybeShowWhatsNew(S.returning), 600);
+  }
 
   S.readyAt = Date.now();
   S.prevVoiceOf = null;
@@ -440,7 +518,28 @@ function onHistory(m) {
   }
 }
 
+// список личных переписок; непрочитанные — где последнее сообщение новее прочитанного
+function onDms(list, silent) {
+  S.dms = list;
+  for (const d of list) {
+    if (d.lastId > (S.lastRead[d.id] || 0) && !(S.view === "text" && S.textId === d.id) && !S.unread.has(d.id)) {
+      S.unread.set(d.id, { count: 1, mentions: 1 });
+    }
+  }
+  if (!silent) {
+    renderChannels();
+    updateTitle();
+  }
+}
+
 function onNewMessage(msg, nonce, from) {
+  const dm = (S.dms || []).find((x) => x.id === msg.channelId);
+  if (dm) {
+    dm.lastId = Math.max(dm.lastId || 0, msg.id);
+    S.dms.sort((a, b) => b.lastId - a.lastId);
+  } else if (!S.channels.some((c) => c.id === msg.channelId)) {
+    send("dms"); // новая переписка — обновим список
+  }
   const st = chStore(msg.channelId);
   if (st.loaded) {
     const i = nonce && from === S.me.id ? st.list.findIndex((x) => x.pending && x.nonce === nonce) : -1;
@@ -459,7 +558,7 @@ function onNewMessage(msg, nonce, from) {
   } else {
     const u = S.unread.get(msg.channelId) || { count: 0, mentions: 0 };
     u.count++;
-    const mention = mentionsMe(msg.text, S.me.nickname) || (msg.replyTo && msg.replyTo.author === S.me.nickname);
+    const mention = !!dm || !S.channels.some((c) => c.id === msg.channelId) || mentionsMe(msg.text, S.me.nickname) || (msg.replyTo && msg.replyTo.author === S.me.nickname);
     if (mention) {
       u.mentions++;
       playSfx("message");
@@ -538,7 +637,7 @@ function notify(msg) {
   if (!S.settings.notifications || !document.hidden || !("Notification" in window) || Notification.permission !== "granted") return;
   const ch = channelById(msg.channelId);
   try {
-    const n = new Notification(`${msg.author} (#${ch ? ch.name : ""})`, { body: msg.text || "📎 Вложение", icon: "/logo.png", tag: "z228-" + msg.channelId });
+    const n = new Notification(ch && ch.kind === "dm" ? `${msg.author} (личное)` : `${msg.author} (#${ch ? ch.name : ""})`, { body: msg.text || "📎 Вложение", icon: "/logo.png", tag: "z228-" + msg.channelId });
     n.onclick = () => {
       window.focus();
       selectText(msg.channelId);
@@ -728,7 +827,24 @@ function renderChannels() {
   const root = $("#channels");
   root.innerHTML = "";
   const addBtn = (kind) =>
-    S.admin ? h("button.icon-btn", { title: "Создать канал", html: icon("plus", 16), onclick: (e) => (e.stopPropagation(), createChannelDialog(kind)) }) : null;
+    can("channels") ? h("button.icon-btn", { title: "Создать канал", html: icon("plus", 16), onclick: (e) => (e.stopPropagation(), createChannelDialog(kind)) }) : null;
+
+  if ((S.dms || []).length) {
+    root.append(h("div.category", null, h("span", null, "Личные сообщения")));
+    for (const d of S.dms) {
+      const u = S.unread.get(d.id);
+      const sel = S.view === "text" && S.textId === d.id;
+      root.append(
+        h(
+          "button.channel.dm" + (sel ? ".selected" : "") + (u && u.count && !sel ? ".unread" : ""),
+          { onclick: () => selectText(d.id), oncontextmenu: (e) => userMenuByNick(e, d.peer) },
+          avatar(d.peer, 22),
+          h("span.name", null, d.peer),
+          u && u.mentions && !sel ? h("span.badge", null, u.mentions) : null
+        )
+      );
+    }
+  }
 
   root.append(h("div.category", null, h("span", null, "Текстовые каналы"), addBtn("text")));
   for (const ch of textChannels()) {
@@ -793,8 +909,8 @@ function renderChannels() {
               onclick: (e) => userMenu(e, u),
               oncontextmenu: (e) => userMenu(e, u),
               // админ таскает кого угодно, остальные — только себя
-              draggable: S.admin || u.id === S.me.id ? "true" : null,
-              title: S.admin || u.id === S.me.id ? "Перетащите в другой голосовой канал" : null,
+              draggable: can("mute") || u.id === S.me.id ? "true" : null,
+              title: can("mute") || u.id === S.me.id ? "Перетащите в другой голосовой канал" : null,
               ondragstart: (e) => {
                 e.dataTransfer.setData(DRAG_TYPE, u.id);
                 e.dataTransfer.effectAllowed = "move";
@@ -840,7 +956,7 @@ function renderHeader() {
     $("#headerTopic").textContent = "";
   } else {
     const ch = channelById(S.textId);
-    $("#headerIcon").innerHTML = icon("hash", 22);
+    $("#headerIcon").innerHTML = ch && ch.kind === "dm" ? '<span class="dm-at">@</span>' : icon("hash", 22);
     $("#headerTitle").textContent = ch ? ch.name : "";
     $("#headerTopic").textContent = "";
   }
@@ -923,6 +1039,23 @@ function renderMembers() {
   };
   for (const r of S.roles || []) section(r.name, S.users.filter((u) => roleOf(u) === r), r.color);
   section("В сети", S.users.filter((u) => !roleOf(u)));
+
+  // кто бывал на сервере, но сейчас не в сети
+  const online = new Set(S.users.map((u) => u.nickname.toLowerCase()));
+  const off = (S.members || []).filter((m) => !online.has(m.nickname.toLowerCase()) && m.nickname !== S.bot).slice(0, 60);
+  if (!off.length) return;
+  root.append(h("div.category", null, h("span", null, `Не в сети — ${off.length}`)));
+  for (const m of off) {
+    const r = roleOf(m);
+    root.append(
+      h(
+        "div.member.offline",
+        { onclick: (e) => userMenuByNick(e, m.nickname), oncontextmenu: (e) => userMenuByNick(e, m.nickname), title: "Был(а) в сети: " + fmtFull(m.lastSeen) },
+        h("span.avatar-wrap", null, avatar(m.nickname, 32)),
+        h("span.name", r ? { style: { color: r.color } } : null, m.nickname, h("span.sub", null, "был(а) " + agoText(m.lastSeen)))
+      )
+    );
+  }
 }
 
 // ---------- индикатор качества связи ----------
@@ -1028,6 +1161,7 @@ function messageEl(m, prev) {
         "div.msg-header",
         null,
         h("span.msg-author", { style: { color: avatarColorText(m.author) }, onclick: (e) => userMenuByNick(e, m.author) }, m.author),
+        m.author === S.bot ? h("span.bot-tag", null, "БОТ") : null,
         h("span.msg-time", { title: fmtFull(m.createdAt) }, fmtStamp(m.createdAt))
       )
     );
@@ -1073,7 +1207,7 @@ function messageEl(m, prev) {
       h("button.icon-btn", { title: "Ответить", html: icon("reply", 20), onclick: () => setReply(m) })
     );
     if (mine) actions.append(h("button.icon-btn", { title: "Изменить", html: icon("edit", 20), onclick: () => startEdit(m.id) }));
-    if (mine || S.admin) actions.append(h("button.icon-btn.danger", { title: "Удалить", html: icon("trash", 20), onclick: (e) => confirmDelete(m, e.shiftKey) }));
+    if (mine || (can("messages") && !isDm(m.channelId))) actions.append(h("button.icon-btn.danger", { title: "Удалить", html: icon("trash", 20), onclick: (e) => confirmDelete(m, e.shiftKey) }));
     el.append(actions);
   }
   return el;
@@ -1131,9 +1265,9 @@ function renderMessages({ keepOffset = false, toBottom = false } = {}) {
       h(
         "div.chat-welcome",
         null,
-        h("div.welcome-icon", { html: icon("hash", 40) }),
-        h("h1", null, "Добро пожаловать в #" + ch.name + "!"),
-        h("p", null, "Это начало канала #" + ch.name + ".")
+        ch.kind === "dm" ? avatar(ch.name, 80) : h("div.welcome-icon", { html: icon("hash", 40) }),
+        h("h1", null, ch.kind === "dm" ? ch.name : "Добро пожаловать в #" + ch.name + "!"),
+        h("p", null, ch.kind === "dm" ? "Начало личной переписки. Её видите только вы двое." : "Это начало канала #" + ch.name + ".")
       )
     );
   }
@@ -1259,7 +1393,7 @@ function confirmDelete(m, skip) {
 function renderComposerState() {
   const ch = channelById(S.textId);
   const ta = $("#composerInput");
-  ta.placeholder = ch ? `Написать в #${ch.name}` : "Написать…";
+  ta.placeholder = ch ? (ch.kind === "dm" ? `Написать @${ch.name}` : `Написать в #${ch.name}`) : "Написать…";
 }
 
 function setReply(m) {
@@ -1818,7 +1952,7 @@ function userMenu(e, u) {
       h(
         "div.sub",
         null,
-        u.offline ? "Не в сети" : u.voiceChannelId ? "🔊 " + ((channelById(u.voiceChannelId) || {}).name || "") : "В сети",
+        u.offline ? offlineText(u.nickname) : u.voiceChannelId ? "🔊 " + ((channelById(u.voiceChannelId) || {}).name || "") : "В сети",
         u.admin ? " · администратор" : ""
       )
     )
@@ -1865,6 +1999,9 @@ function userMenu(e, u) {
       )
     );
   }
+  if (!isMe && u.nickname !== S.bot) {
+    menu.append(menuItem("Написать сообщение", () => (closeLayer(), send("dm-open", { name: u.nickname })), { iconName: "reply" }));
+  }
   if (!isMe) {
     menu.append(
       menuItem("Упомянуть", () => {
@@ -1879,9 +2016,10 @@ function userMenu(e, u) {
     menu.append(menuItem("Сменить аватарку", () => openSettings("profile"), { iconName: "edit" }));
     menu.append(menuItem("Настройки", () => openSettings("voice"), { iconName: "gear" }));
   }
-  if (S.admin && !isMe && !u.offline) {
+  const manage = !isMe && u.nickname !== S.bot && (can("admin") || can("mute") || can("kick"));
+  if (manage) {
     menu.append(h("div.menu-sep"));
-    if ((S.roles || []).length) {
+    if (can("admin") && (S.roles || []).length) {
       const cur = (S.userRoles || {})[key] || 0;
       menu.append(h("div.menu-label", null, "Роль"));
       for (const r of [{ id: 0, name: "Без роли" }, ...S.roles]) {
@@ -1891,9 +2029,12 @@ function userMenu(e, u) {
       }
       menu.append(h("div.menu-sep"));
     }
-    menu.append(menuItem("Заглушить для всех", () => (send("server-mute", { sessionId: u.id, value: !u.serverMuted }), closeLayer()), { check: !!u.serverMuted }));
-    if (u.voiceChannelId) menu.append(menuItem("Отключить от голоса", () => send("disconnect-voice", { sessionId: u.id }), { danger: true }));
-    menu.append(
+    if (can("mute") && !u.offline) {
+      menu.append(menuItem("Заглушить для всех", () => (send("server-mute", { sessionId: u.id, value: !u.serverMuted }), closeLayer()), { check: !!u.serverMuted }));
+      if (u.voiceChannelId) menu.append(menuItem("Отключить от голоса", () => send("disconnect-voice", { sessionId: u.id }), { danger: true }));
+    }
+    if (can("kick")) menu.append(menuItem("Забанить " + u.nickname, () => banDialog(u), { danger: true }));
+    if (can("kick") && !u.offline) menu.append(
       menuItem(
         "Выгнать " + u.nickname,
         () =>
@@ -1913,8 +2054,28 @@ function userMenu(e, u) {
   popover(card, anchor, { side: anchor && anchor.closest(".members") ? "left" : "right" });
 }
 
+// бан: по сессии, если человек в сети, иначе по нику
+function banDialog(u) {
+  closeLayer();
+  modal({
+    title: "Забанить " + u.nickname,
+    body: [
+      h("p", null, "Человек будет отключён и не сможет зайти — ни под этим ником, ни из этого браузера."),
+      h("p.muted.small", null, "Его ключ сотрётся из браузера, а разовая ссылка, по которой он вошёл, удалится. Вернуть можно в «Администрирование → Баны» — после разбана он заходит по новой ссылке."),
+    ],
+    okText: "Забанить",
+    danger: true,
+    onOk: () => send("ban", u.offline || !u.id ? { name: u.nickname } : { sessionId: u.id }),
+  });
+}
+
+function offlineText(nick) {
+  const m = (S.members || []).find((x) => x.nickname.toLowerCase() === nick.toLowerCase());
+  return m ? "Не в сети · был(а) " + agoText(m.lastSeen) : "Не в сети";
+}
+
 function channelMenu(e, ch) {
-  if (!S.admin) return;
+  if (!can("channels") || ch.kind === "dm") return;
   e.preventDefault();
   const menu = h(
     "div.ctx-menu",
@@ -1944,7 +2105,7 @@ function messageMenu(e, m) {
   menu.append(menuItem("Ответить", () => setReply(m), { iconName: "reply" }));
   if (m.text) menu.append(menuItem("Копировать текст", () => navigator.clipboard?.writeText(m.text), { iconName: "file" }));
   if (mine) menu.append(menuItem("Изменить", () => startEdit(m.id), { iconName: "edit" }));
-  if (mine || S.admin) menu.append(h("div.menu-sep"), menuItem("Удалить сообщение", () => confirmDelete(m, e.shiftKey), { danger: true, iconName: "trash" }));
+  if (mine || (can("messages") && !isDm(m.channelId))) menu.append(h("div.menu-sep"), menuItem("Удалить сообщение", () => confirmDelete(m, e.shiftKey), { danger: true, iconName: "trash" }));
   popover(menu, null, { x: e.clientX, y: e.clientY });
 }
 
@@ -2084,6 +2245,8 @@ function openSettings(section = "voice") {
 
 function closeSettings() {
   S.invitesRequested = false;
+  S.bansRequested = false;
+  S.aiRequested = false;
   S.desktopInviteRequested = false;
   if (stopMicTest) stopMicTest.stop();
   stopMicTest = null;
@@ -2109,8 +2272,36 @@ function select(options, value, onChange) {
   return sel;
 }
 
+// Ответы сервера (ключи, роли, баны) перерисовывают раздел целиком. Чтобы не терять то, что человек
+// печатает в этот момент, запоминаем текст полей и фокус и восстанавливаем после перерисовки.
+function settingsDrafts() {
+  if (!settingsEl) return null;
+  const fields = [...settingsEl.querySelectorAll("input, textarea")].filter((x) => !x.readOnly && x.placeholder && !["range", "checkbox", "color"].includes(x.type));
+  const values = new Map(fields.filter((x) => x.value).map((x) => [x.placeholder, x.value]));
+  const ae = document.activeElement;
+  const focus = fields.includes(ae) ? { ph: ae.placeholder, start: ae.selectionStart, end: ae.selectionEnd } : null;
+  return { values, focus };
+}
+
+function restoreDrafts(d) {
+  if (!d || !settingsEl) return;
+  for (const x of settingsEl.querySelectorAll("input, textarea")) {
+    if (!x.value && d.values.has(x.placeholder)) x.value = d.values.get(x.placeholder);
+  }
+  if (d.focus) {
+    const x = [...settingsEl.querySelectorAll("input, textarea")].find((y) => y.placeholder === d.focus.ph);
+    if (x) {
+      x.focus();
+      try {
+        x.setSelectionRange(d.focus.start, d.focus.end);
+      } catch {}
+    }
+  }
+}
+
 function renderSettings() {
   if (!settingsEl) return;
+  const drafts = settingsDrafts();
   if (stopMicTest) {
     stopMicTest.stop();
     stopMicTest = null;
@@ -2147,6 +2338,7 @@ function renderSettings() {
   );
   settingsEl.append(nav, wrap);
   ({ profile: settingsProfile, voice: settingsVoice, look: settingsLook, notify: settingsNotify, keys: settingsKeys, app: settingsApp, admin: settingsAdmin, donate: settingsDonate })[settingsSection](content);
+  restoreDrafts(drafts);
 }
 
 async function settingsVoice(c) {
@@ -2674,7 +2866,7 @@ function settingsApp(c) {
 
 function settingsAdmin(c) {
   c.append(h("h2", null, "Администрирование"));
-  if (!S.admin) {
+  if (!canManage()) {
     const pw = h("input", { type: "password", placeholder: "Пароль администратора" });
     const go = () => send("admin-login", { password: pw.value });
     pw.onkeydown = (e) => e.key === "Enter" && go();
@@ -2686,9 +2878,17 @@ function settingsAdmin(c) {
     setTimeout(() => pw.focus());
     return;
   }
-  settingsAccess(c);
-  settingsRoles(c);
-  c.append(
+  if (!S.admin) {
+    const mine = myPerms().includes("admin") ? ["admin"] : myPerms();
+    c.append(h("p.muted", null, "Ваша роль даёт права: " + mine.map((p) => PERM_LABELS[p] || p).join(", ") + "."));
+  }
+  if (can("invites")) settingsAccess(c);
+  if (can("kick")) settingsBans(c);
+  if (can("admin")) {
+    settingsRoles(c);
+    settingsAI(c);
+  }
+  if (can("admin")) c.append(
     h("h3", null, "Резервные копии"),
     h(
       "p.muted.small",
@@ -2698,6 +2898,12 @@ function settingsAdmin(c) {
     ),
     h("button.btn", { onclick: () => send("backup-download") }, "Скачать резервную копию")
   );
+  if (can("channels")) settingsChannels(c);
+  settingsOnline(c);
+  if (S.admin) c.append(h("div", { style: { marginTop: "24px" } }, h("button.btn", { onclick: () => send("admin-logout") }, "Выйти из режима администратора")));
+}
+
+function settingsChannels(c) {
   c.append(h("h3", null, "Каналы"));
   const list = h("div.admin-list");
   for (const ch of S.channels) {
@@ -2723,6 +2929,10 @@ function settingsAdmin(c) {
       h("button.btn", { onclick: () => createChannelDialog("voice") }, "+ Голосовой канал")
     )
   );
+}
+
+function settingsOnline(c) {
+  if (!can("mute") && !can("kick")) return;
   c.append(h("h3", null, `В сети — ${S.users.length}`));
   const ul = h("div.admin-list");
   for (const u of S.users) {
@@ -2733,16 +2943,104 @@ function settingsAdmin(c) {
         null,
         avatar(u.nickname, 24),
         h("span.name", null, u.nickname, u.voiceChannelId ? h("span.muted.small", null, "  🔊 " + ((channelById(u.voiceChannelId) || {}).name || "")) : null),
-        !isMe ? h("button.btn.btn-sm", { onclick: () => send("server-mute", { sessionId: u.id, value: !u.serverMuted }) }, u.serverMuted ? "Снять мьют" : "Мьют") : null,
-        !isMe && u.voiceChannelId ? h("button.btn.btn-sm", { onclick: () => send("disconnect-voice", { sessionId: u.id }) }, "Из голоса") : null,
-        !isMe ? h("button.btn.btn-sm.btn-danger", { onclick: () => send("kick", { sessionId: u.id }) }, "Выгнать") : null
+        !isMe && can("mute") ? h("button.btn.btn-sm", { onclick: () => send("server-mute", { sessionId: u.id, value: !u.serverMuted }) }, u.serverMuted ? "Снять мьют" : "Мьют") : null,
+        !isMe && can("mute") && u.voiceChannelId ? h("button.btn.btn-sm", { onclick: () => send("disconnect-voice", { sessionId: u.id }) }, "Из голоса") : null,
+        !isMe && can("kick") ? h("button.btn.btn-sm.btn-danger", { onclick: () => send("kick", { sessionId: u.id }) }, "Выгнать") : null,
+        !isMe && can("kick") ? h("button.btn.btn-sm.btn-danger", { onclick: () => banDialog(u) }, "Бан") : null
       )
     );
   }
-  c.append(ul, h("div", { style: { marginTop: "24px" } }, h("button.btn", { onclick: () => send("admin-logout") }, "Выйти из режима администратора")));
+  c.append(ul);
+}
+
+// ---------- баны ----------
+
+function settingsBans(c) {
+  if (!S.bansRequested) {
+    S.bansRequested = true;
+    send("bans");
+  }
+  c.append(h("h3", null, "Баны"));
+  const list = S.bans || [];
+  if (!list.length) {
+    c.append(h("p.muted.small", null, "Никто не забанен. Забанить можно из меню человека (клик по нику) или кнопкой «Бан» ниже."));
+    return;
+  }
+  const ul = h("div.admin-list");
+  for (const b of list) {
+    ul.append(
+      h(
+        "div.admin-row",
+        null,
+        avatar(b.nick, 24),
+        h("span.name", null, b.nick, h("span.muted.small", null, `  · забанил ${b.createdBy || "—"}, ${fmtFull(b.createdAt)}`)),
+        h("button.btn.btn-sm", { onclick: () => send("unban", { id: b.id }) }, "Разбанить")
+      )
+    );
+  }
+  c.append(ul);
+}
+
+// ---------- ИИ ----------
+
+function settingsAI(c) {
+  if (!S.aiRequested) {
+    S.aiRequested = true;
+    send("ai-settings");
+  }
+  const st = S.aiSettings || { configured: false, enabled: true };
+  c.append(
+    h("h3", null, "ИИ (DeepSeek)"),
+    h(
+      "p.muted.small",
+      null,
+      "Бот AI отвечает в чате и в личке на «@ai вопрос» или «/ai вопрос»: коротко, быстро, по делу и с подколом. " +
+        "Звать его могут только люди с ролью, где включено «Звать ИИ» (и админы). Ответы платные — по вашему ключу DeepSeek."
+    )
+  );
+  const key = h("input.input", { type: "password", placeholder: st.configured ? "Ключ сохранён — вставьте новый, чтобы заменить" : "Ключ API DeepSeek (sk-…)", autocomplete: "off" });
+  let enabled = st.enabled;
+  c.append(
+    toggleRow("ИИ включён", st.configured ? "Ключ сохранён на сервере." : "Сначала вставьте ключ.", enabled, (v) => (enabled = v)),
+    h(
+      "div",
+      { style: { display: "flex", gap: "8px", maxWidth: "560px", marginTop: "8px" } },
+      key,
+      h("button.btn.btn-primary", { onclick: () => (send("ai-config", { text: key.value, value: enabled }), (key.value = ""), toast("Настройки ИИ сохранены.", "ok")) }, "Сохранить"),
+      st.configured ? h("button.btn.btn-danger", { onclick: () => send("ai-config", { kind: "clear", value: false }) }, "Удалить ключ") : null
+    )
+  );
 }
 
 // ---------- роли ----------
+
+// переключатели прав роли; onChange получает новый список
+function permChips(perms, onChange) {
+  const cur = new Set(perms);
+  const wrap = h("span.perm-chips");
+  const draw = () => {
+    wrap.innerHTML = "";
+    for (const p of PERM_ORDER) {
+      wrap.append(
+        h(
+          "button.perm-chip" + (cur.has(p) ? ".on" : "") + (p === "admin" ? ".danger" : ""),
+          {
+            title: p === "admin" ? "Может всё: роли, ключи, баны, ИИ, резервные копии" : PERM_LABELS[p],
+            onclick: (e) => {
+              e.stopPropagation();
+              cur.has(p) ? cur.delete(p) : cur.add(p);
+              draw();
+              onChange(PERM_ORDER.filter((x) => cur.has(x)));
+            },
+          },
+          PERM_LABELS[p]
+        )
+      );
+    }
+  };
+  draw();
+  return wrap;
+}
 
 function settingsRoles(c) {
   c.append(h("h3", null, "Роли"));
@@ -2755,6 +3053,7 @@ function settingsRoles(c) {
         null,
         h("span.role-dot", { style: { background: r.color } }),
         h("span.name", { style: { color: r.color, fontWeight: 600 } }, r.name, h("span.muted.small", { style: { fontWeight: 400 } }, `  · ${count}`)),
+        permChips(r.perms || [], (perms) => send("role-perms", { id: r.id, keys: perms })),
         h("button.icon-btn", { html: icon("up", 18), title: "Выше", onclick: () => send("role-move", { id: r.id, dir: -1 }) }),
         h("button.icon-btn", { html: icon("down", 18), title: "Ниже", onclick: () => send("role-move", { id: r.id, dir: 1 }) }),
         h("button.icon-btn.danger", {
@@ -2775,19 +3074,36 @@ function settingsRoles(c) {
   if ((S.roles || []).length) c.append(list);
   const name = h("input.input", { placeholder: "Название роли", maxlength: 32 });
   const color = h("input.role-color", { type: "color", value: "#22d3ee", title: "Цвет роли" });
+  S.newRolePerms = S.newRolePerms || ["ai"];
   const create = () => {
     if (!name.value.trim()) return;
-    send("role-create", { name: name.value, text: color.value });
+    send("role-create", { name: name.value, text: color.value, keys: S.newRolePerms });
     name.value = "";
   };
   name.onkeydown = (e) => e.key === "Enter" && create();
   c.append(
     h("div", { style: { display: "flex", gap: "8px", marginTop: "12px", maxWidth: "560px", alignItems: "center" } }, color, name, h("button.btn.btn-primary", { onclick: create }, "Создать роль")),
+    h("div", { style: { marginTop: "8px" } }, h("span.muted.small", null, "Права новой роли: "), permChips(S.newRolePerms, (p) => (S.newRolePerms = p))),
     h("p.muted.small", { style: { marginTop: "8px" } }, "Назначить роль: клик по человеку в списке справа → «Роль». Справа участники группируются по ролям в этом порядке.")
   );
 }
 
 // ---------- ключи доступа ----------
+
+function inviteDead(inv) {
+  return (inv.expiresAt && inv.expiresAt <= Date.now()) || (inv.maxUses > 0 && inv.people >= inv.maxUses);
+}
+
+function inviteMeta(inv) {
+  const parts = [];
+  if (inv.maxUses === 1) parts.push(inv.people ? "разовая, использована" : "разовая");
+  else if (inv.maxUses > 1) parts.push(`на ${inv.maxUses} чел., вошли ${inv.people}`);
+  else parts.push(`людей: ${inv.people}`);
+  if (inv.expiresAt) parts.push(inv.expiresAt <= Date.now() ? "истекла" : "до " + fmtFull(inv.expiresAt));
+  parts.push(`входов: ${inv.uses}`);
+  if (inv.createdBy) parts.push("создал " + inv.createdBy);
+  return parts.join(" · ");
+}
 
 function inviteLink(code) {
   return `${location.origin}/#k=${code}`;
@@ -2831,17 +3147,13 @@ function settingsAccess(c) {
   const list = h("div.admin-list");
   for (const inv of info.invites) {
     const link = inviteLink(inv.code);
+    const dead = inviteDead(inv);
     list.append(
       h(
-        "div.admin-row",
+        "div.admin-row" + (dead ? ".dead" : ""),
         { style: { flexWrap: "wrap" } },
         h("span", { html: icon("crown", 16), style: { color: "var(--brand)" } }),
-        h(
-          "span.name",
-          null,
-          h("b", null, inv.label || "Без названия"),
-          h("span.muted.small", null, `  · входов: ${inv.uses}` + (inv.createdBy ? ` · создал ${inv.createdBy}` : ""))
-        ),
+        h("span.name", null, h("b", null, inv.label || "Без названия"), h("span.muted.small", null, "  · " + inviteMeta(inv))),
         h("input.input", { value: link, readonly: true, style: { flex: "1 1 260px", height: "30px", fontSize: "13px" }, onclick: (e) => e.target.select() }),
         h("button.btn.btn-sm.btn-primary", { onclick: () => copyText(link) }, "Копировать"),
         h("button.icon-btn.danger", {
@@ -2861,10 +3173,16 @@ function settingsAccess(c) {
   }
   if (info.invites.length) c.append(list);
   const label = h("input.input", { placeholder: "Для кого ключ (необязательно): например, «брат»", maxlength: 40 });
+  S.inviteKind = S.inviteKind || "1";
+  S.inviteTTL = S.inviteTTL || "0";
+  const kindSel = select([["1", "Разовая (на одного)"], ["0", "Многоразовая"]], S.inviteKind, (v) => (S.inviteKind = v));
+  const ttlSel = select([["0", "Без срока"], ["3600", "На 1 час"], ["86400", "На 1 день"], ["604800", "На 7 дней"], ["2592000", "На 30 дней"]], S.inviteTTL, (v) => (S.inviteTTL = v));
+  for (const x of [kindSel, ttlSel]) Object.assign(x.style, { width: "auto", flex: "0 0 auto" });
+  label.style.flex = "1 1 240px";
   const create = () => {
     const first = !info.required;
     const go = () => {
-      send("invite-create", { name: label.value });
+      send("invite-create", { name: label.value, maxUses: +S.inviteKind, ttl: +S.inviteTTL });
       label.value = "";
     };
     if (!first) return go();
@@ -2880,11 +3198,12 @@ function settingsAccess(c) {
   };
   label.onkeydown = (e) => e.key === "Enter" && create();
   c.append(
-    h("div", { style: { display: "flex", gap: "8px", marginTop: "12px", maxWidth: "560px" } }, label, h("button.btn.btn-primary", { onclick: create }, "Создать ключ")),
+    h("div", { style: { display: "flex", gap: "8px", marginTop: "12px", maxWidth: "760px", flexWrap: "wrap" } }, label, kindSel, ttlSel, h("button.btn.btn-primary", { onclick: create }, "Создать ключ")),
     h(
       "p.muted.small",
       { style: { marginTop: "8px" } },
-      "Совет: делайте отдельный ключ на каждого — тогда можно отозвать доступ одному человеку, не трогая остальных."
+      "Разовая ссылка привязывается к первому, кто по ней вошёл: он переподключается сколько угодно, а другой по ней уже не зайдёт. " +
+        "Совет: делайте по ключу на каждого — тогда можно отозвать доступ одному, не трогая остальных."
     )
   );
   settingsDesktopLink(c, info);
@@ -2918,7 +3237,7 @@ function settingsDesktopLink(c, info) {
     }
     host = location.hostname + ":" + di.httpsPort;
   }
-  const opts = info.invites.map((inv) => [inv.code, inv.label || "Без названия"]);
+  const opts = info.invites.filter((inv) => !inviteDead(inv)).map((inv) => [inv.code, inv.label || "Без названия"]);
   if (!info.required) opts.unshift(["", "Без ключа (сервер открыт)"]);
   if (!opts.length) {
     c.append(h("p.muted", null, "Сначала создайте ключ-приглашение выше."));
@@ -3213,9 +3532,9 @@ function bindUi() {
     const m = $("#serverMenu");
     if (!m.hidden) return (m.hidden = true);
     m.innerHTML = "";
-    if (S.admin) {
+    if (canManage()) {
       m.append(
-        menuItem("Создать канал", () => createChannelDialog("text"), { iconName: "plus" }),
+        ...(can("channels") ? [menuItem("Создать канал", () => createChannelDialog("text"), { iconName: "plus" })] : []),
         menuItem("Администрирование", () => openSettings("admin"), { iconName: "crown" }),
         h("div.menu-sep")
       );

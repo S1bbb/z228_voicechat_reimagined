@@ -128,6 +128,10 @@ func Open(dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("schema: %w", err)
 	}
 	s := &Store{db: db}
+	if err := s.migrate(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	if err := s.seed(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -192,10 +196,14 @@ type Invite struct {
 	CreatedAt  int64  `json:"createdAt"`
 	Uses       int    `json:"uses"`
 	LastUsedAt *int64 `json:"lastUsedAt"`
+	MaxUses    int    `json:"maxUses"`   // 0 — без ограничения, 1 — разовый
+	ExpiresAt  *int64 `json:"expiresAt"` // nil — бессрочный
+	People     int    `json:"people"`    // сколько разных людей вошли по ключу
 }
 
 func (s *Store) Invites(ctx context.Context) ([]Invite, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT code, label, created_by, created_at, uses, last_used_at FROM invites ORDER BY created_at`)
+	rows, err := s.db.QueryContext(ctx, `SELECT code, label, created_by, created_at, uses, last_used_at, max_uses, expires_at,
+		(SELECT COUNT(*) FROM invite_clients c WHERE c.code=invites.code) FROM invites ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -203,13 +211,17 @@ func (s *Store) Invites(ctx context.Context) ([]Invite, error) {
 	out := []Invite{}
 	for rows.Next() {
 		var in Invite
-		var last sql.NullInt64
-		if err := rows.Scan(&in.Code, &in.Label, &in.CreatedBy, &in.CreatedAt, &in.Uses, &last); err != nil {
+		var last, exp sql.NullInt64
+		if err := rows.Scan(&in.Code, &in.Label, &in.CreatedBy, &in.CreatedAt, &in.Uses, &last, &in.MaxUses, &exp, &in.People); err != nil {
 			return nil, err
 		}
 		if last.Valid {
 			v := last.Int64
 			in.LastUsedAt = &v
+		}
+		if exp.Valid {
+			v := exp.Int64
+			in.ExpiresAt = &v
 		}
 		out = append(out, in)
 	}
@@ -222,9 +234,14 @@ func (s *Store) InviteCount(ctx context.Context) (int, error) {
 	return n, err
 }
 
-func (s *Store) CreateInvite(ctx context.Context, code, label, by string) error {
+// CreateInvite: maxUses — сколько разных людей могут войти (0 — сколько угодно), expiresAt — срок (0 — бессрочно).
+func (s *Store) CreateInvite(ctx context.Context, code, label, by string, maxUses int, expiresAt int64) error {
+	var exp any
+	if expiresAt > 0 {
+		exp = expiresAt
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO invites(code,label,created_by,created_at) VALUES(?,?,?,?)`, code, label, by, nowMs())
+		`INSERT INTO invites(code,label,created_by,created_at,max_uses,expires_at) VALUES(?,?,?,?,?,?)`, code, label, by, nowMs(), maxUses, exp)
 	return err
 }
 
@@ -239,41 +256,31 @@ func (s *Store) DeleteInvite(ctx context.Context, code string) error {
 	return nil
 }
 
-// UseInvite отмечает вход по ключу; false — такого ключа нет.
-func (s *Store) UseInvite(ctx context.Context, code string) (bool, error) {
-	if code == "" {
-		return false, nil
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE invites SET uses=uses+1, last_used_at=? WHERE code=?`, nowMs(), code)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
-}
-
 // ---------- roles ----------
 
 type Role struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	Color    string `json:"color"`
-	Position int    `json:"position"`
+	ID       int64    `json:"id"`
+	Name     string   `json:"name"`
+	Color    string   `json:"color"`
+	Position int      `json:"position"`
+	Perms    []string `json:"perms"`
 }
 
 // Roles — роли по порядку и кому какая назначена (ник в нижнем регистре -> id роли).
 func (s *Store) Roles(ctx context.Context) ([]Role, map[string]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, color, position FROM roles ORDER BY position, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, color, position, perms FROM roles ORDER BY position, id`)
 	if err != nil {
 		return nil, nil, err
 	}
 	roles := []Role{}
 	for rows.Next() {
 		var r Role
-		if err := rows.Scan(&r.ID, &r.Name, &r.Color, &r.Position); err != nil {
+		var perms string
+		if err := rows.Scan(&r.ID, &r.Name, &r.Color, &r.Position, &perms); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}
+		r.Perms = splitPerms(perms)
 		roles = append(roles, r)
 	}
 	rows.Close()
@@ -294,10 +301,10 @@ func (s *Store) Roles(ctx context.Context) ([]Role, map[string]int64, error) {
 	return roles, assigned, rows.Err()
 }
 
-func (s *Store) CreateRole(ctx context.Context, name, color string) error {
+func (s *Store) CreateRole(ctx context.Context, name, color string, perms []string) error {
 	var pos int
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(position),0)+1 FROM roles`).Scan(&pos)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO roles(name,color,position) VALUES(?,?,?)`, name, color, pos)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO roles(name,color,position,perms) VALUES(?,?,?,?)`, name, color, pos, joinPerms(perms))
 	return err
 }
 
@@ -379,7 +386,8 @@ func (s *Store) SetAvatar(ctx context.Context, nick, url string) error {
 // ---------- channels ----------
 
 func (s *Store) Channels(ctx context.Context) ([]Channel, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, name, position FROM channels ORDER BY kind DESC, position, id`)
+	// личные каналы (kind='dm') в общий список не попадают
+	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, name, position FROM channels WHERE kind IN ('text','voice') ORDER BY kind DESC, position, id`)
 	if err != nil {
 		return nil, err
 	}
