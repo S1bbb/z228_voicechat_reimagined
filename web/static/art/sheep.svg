@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 112">
+  <!-- ножки -->
+  <g fill="#5f7d9c">
+    <rect x="34" y="84" width="10" height="24" rx="5"/>
+    <rect x="76" y="84" width="10" height="24" rx="5"/>
+  </g>
+  <!-- шерсть: контур, потом заливка -->
+  <g fill="#9fbad4">
+    <circle cx="30" cy="54" r="21"/><circle cx="50" cy="38" r="21"/><circle cx="72" cy="38" r="21"/>
+    <circle cx="92" cy="56" r="21"/><circle cx="82" cy="78" r="20"/><circle cx="58" cy="84" r="20"/>
+    <circle cx="36" cy="78" r="20"/><circle cx="60" cy="60" r="28"/>
+  </g>
+  <g fill="#fbfdff">
+    <circle cx="30" cy="54" r="18"/><circle cx="50" cy="38" r="18"/><circle cx="72" cy="38" r="18"/>
+    <circle cx="92" cy="56" r="18"/><circle cx="82" cy="78" r="17"/><circle cx="58" cy="84" r="17"/>
+    <circle cx="36" cy="78" r="17"/><circle cx="60" cy="60" r="26"/>
+  </g>
+  <!-- ушки -->
+  <ellipse cx="37" cy="56" rx="11" ry="6" fill="#5f7d9c" transform="rotate(25 37 56)"/>
+  <ellipse cx="83" cy="56" rx="11" ry="6" fill="#5f7d9c" transform="rotate(-25 83 56)"/>
+  <!-- мордочка -->
+  <ellipse cx="60" cy="64" rx="19" ry="21" fill="#5f7d9c"/>
+  <circle cx="53" cy="44" r="7" fill="#fbfdff"/><circle cx="60" cy="41" r="7.5" fill="#fbfdff"/><circle cx="67" cy="44" r="7" fill="#fbfdff"/>
+  <circle cx="52" cy="61" r="5" fill="#fff"/>
+  <circle cx="68" cy="61" r="5" fill="#fff"/>
+  <circle cx="53" cy="62" r="3" fill="#1f2a36"/>
+  <circle cx="67" cy="62" r="3" fill="#1f2a36"/>
+  <circle cx="54" cy="60.8" r="1" fill="#fff"/>
+  <circle cx="68" cy="60.8" r="1" fill="#fff"/>
+  <ellipse cx="47" cy="71" rx="4.5" ry="2.6" fill="#f4a6ba"/>
+  <ellipse cx="73" cy="71" rx="4.5" ry="2.6" fill="#f4a6ba"/>
+  <path d="M55 74 Q60 79 65 74" fill="none" stroke="#1f2a36" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

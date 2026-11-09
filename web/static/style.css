@@ -3664,3 +3664,63 @@ mark {
     radial-gradient(900px 500px at 100% 100%, rgba(255, 255, 255, 0.3), transparent 60%),
     var(--bg-tertiary);
 }
+
+/* ---------- жабки и овечки: картинки (web/static/art) ---------- */
+
+:root[data-palette="frogs"] {
+  --mascot: url("/art/frog.svg");
+  --mascot-tile: url("/art/frog-tile.svg");
+  --mascot-peek: -34px;
+}
+:root[data-palette="sheep"] {
+  --mascot: url("/art/sheep.svg");
+  --mascot-tile: url("/art/sheep-tile.svg");
+  --mascot-peek: -46px; /* у овечки глаза ниже — выглядывает сильнее */
+}
+
+/* узор на фоне переписки */
+:root:is([data-palette="frogs"], [data-palette="sheep"]) .messages {
+  background-image: var(--mascot-tile);
+  background-size: 180px 180px;
+  background-attachment: local;
+}
+
+/* в приветствии канала вместо решётки — зверь */
+:root:is([data-palette="frogs"], [data-palette="sheep"]) .chat-welcome .welcome-icon {
+  width: 104px;
+  height: 96px;
+  border-radius: 0;
+  background: var(--mascot) center / contain no-repeat;
+  & svg {
+    display: none;
+  }
+}
+
+/* зверь выглядывает из-за поля ввода */
+:root:is([data-palette="frogs"], [data-palette="sheep"]) .composer-wrap {
+  position: relative;
+  &::before {
+    content: "";
+    position: absolute;
+    right: 72px;
+    top: var(--mascot-peek);
+    width: 64px;
+    height: 60px;
+    background: var(--mascot) center top / contain no-repeat;
+    pointer-events: none;
+    z-index: 0;
+  }
+  & .composer,
+  & .composer-reply,
+  & .composer-files {
+    position: relative;
+    z-index: 1;
+  }
+}
+
+/* на экране входа — тоже */
+:root:is([data-palette="frogs"], [data-palette="sheep"]) .login-logo {
+  content: var(--mascot);
+  width: 104px;
+  height: 96px;
+}
