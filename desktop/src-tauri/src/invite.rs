@@ -121,13 +121,13 @@ mod tests {
 
     #[test]
     fn z228_scheme() {
-        let i = parse(&format!("z228://82.47.130.62:3443/?fp={FP}&k=abcdEFGH23&n=%D0%9D%D0%B0%D1%88+%D1%81%D0%B5%D1%80%D0%B2%D0%B5%D1%80"), "").unwrap();
-        assert_eq!(i.host, "82.47.130.62");
+        let i = parse(&format!("z228://203.0.113.10:3443/?fp={FP}&k=abcdEFGH23&n=%D0%9D%D0%B0%D1%88+%D1%81%D0%B5%D1%80%D0%B2%D0%B5%D1%80"), "").unwrap();
+        assert_eq!(i.host, "203.0.113.10");
         assert_eq!(i.port, 3443);
         assert_eq!(i.fp.as_deref(), Some(FP));
         assert_eq!(i.key.as_deref(), Some("abcdEFGH23"));
         assert_eq!(i.name.as_deref(), Some("Наш сервер"));
-        assert_eq!(i.addr(), "82.47.130.62:3443");
+        assert_eq!(i.addr(), "203.0.113.10:3443");
     }
 
     #[test]

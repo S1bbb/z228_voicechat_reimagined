@@ -174,13 +174,13 @@ mod tests {
 
     #[test]
     fn origin_match() {
-        let o = Origin { host: "82.47.130.62".into(), port: 3443, spki: None };
-        assert!(o.matches("https://82.47.130.62:3443/"));
-        assert!(o.matches("https://82.47.130.62:3443/ws"));
-        assert!(o.matches("wss://82.47.130.62:3443/ws"));
-        assert!(!o.matches("ws://82.47.130.62:3443/ws"));
-        assert!(!o.matches("https://82.47.130.62:3444/"));
-        assert!(!o.matches("http://82.47.130.62:3443/"));
+        let o = Origin { host: "203.0.113.10".into(), port: 3443, spki: None };
+        assert!(o.matches("https://203.0.113.10:3443/"));
+        assert!(o.matches("https://203.0.113.10:3443/ws"));
+        assert!(o.matches("wss://203.0.113.10:3443/ws"));
+        assert!(!o.matches("ws://203.0.113.10:3443/ws"));
+        assert!(!o.matches("https://203.0.113.10:3444/"));
+        assert!(!o.matches("http://203.0.113.10:3443/"));
         assert!(!o.matches("https://evil.example/"));
         let d = Origin { host: "chat.example.com".into(), port: 443, spki: None };
         assert!(d.matches("https://Chat.Example.com/"));
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn web_links_only() {
         assert!(is_web_link("https://youtube.com/watch?v=1"));
-        assert!(is_web_link("http://82.47.130.62:3000/uploads/x.png"));
+        assert!(is_web_link("http://203.0.113.10:3000/uploads/x.png"));
         assert!(!is_web_link("file:///C:/Windows/System32/calc.exe"));
         assert!(!is_web_link("javascript:alert(1)"));
         assert!(!is_web_link("ms-settings:"));
