@@ -11,6 +11,7 @@ import { maybeShowWhatsNew } from "./whatsnew.js";
 const DEFAULT_SETTINGS = {
   theme: "dark",
   design: "classic", // classic | graphite2 | islands
+  palette: "default", // default | frogs | sheep — только цвета, поверх дизайна
   inputDevice: "",
   outputDevice: "",
   outputVolume: 100,
@@ -3338,7 +3339,31 @@ function settingsLook(c) {
       )
     );
   }
+  c.append(h("h3", null, "Палитра"));
+  for (const [id, label, hint] of PALETTES) {
+    c.append(
+      h(
+        "div.radio-row" + (S.settings.palette === id ? ".sel" : ""),
+        {
+          onclick: () => {
+            S.settings.palette = id;
+            saveSettings();
+            applyTheme();
+            renderSettings();
+          },
+        },
+        h("span.menu-check" + (S.settings.palette === id ? ".on" : "")),
+        h("div", null, h("div", null, label), h("div.muted.small", null, hint))
+      )
+    );
+  }
 }
+
+const PALETTES = [
+  ["default", "Обычная", "Цвета выбранного дизайна."],
+  ["frogs", "🐸 Жабки", "Пастельный зелёный. Работает с любым дизайном, в светлой и тёмной теме."],
+  ["sheep", "🐑 Овечки", "Пастельный голубой, почти белый. Лучше всего — в светлой теме."],
+];
 
 const DESIGNS = [
   ["classic", "Классический", "Как было раньше."],
@@ -4333,6 +4358,8 @@ function applyTheme() {
   document.documentElement.dataset.theme = S.settings.theme === "light" ? "light" : "dark";
   const d = S.settings.design;
   document.documentElement.dataset.design = DESIGNS.some(([id]) => id === d) ? d : "classic";
+  const p = S.settings.palette;
+  document.documentElement.dataset.palette = PALETTES.some(([id]) => id === p) ? p : "default";
 }
 
 // ============================================================ вход

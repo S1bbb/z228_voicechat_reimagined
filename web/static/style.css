@@ -3516,3 +3516,151 @@ mark {
   font-size: 24px;
   line-height: 1;
 }
+
+/* ---------- палитры «Жабки» и «Овечки»: только цвета, поверх любого дизайна и темы ---------- */
+
+/* Жабки — пастельный зелёный */
+:root[data-palette="frogs"][data-theme="light"] {
+  --bg-tertiary: #c9e2c6;
+  --bg-secondary: #d8ebd4;
+  --bg-secondary-alt: #cfe5cb;
+  --bg-primary: #e8f4e4;
+  --bg-floating: #f4faf1;
+  --bg-modifier-hover: rgba(46, 94, 52, 0.07);
+  --bg-modifier-active: rgba(46, 94, 52, 0.12);
+  --bg-modifier-selected: rgba(63, 138, 76, 0.18);
+  --bg-input: #f4faf1;
+  --bg-message-hover: rgba(46, 94, 52, 0.04);
+  --bg-mention: rgba(232, 121, 149, 0.12);
+  --border-mention: #e07a93;
+  --border: #b3d1ae;
+  --text-normal: #1f2e22;
+  --text-muted: #4d6651;
+  --text-faint: #6f8a72;
+  --header-primary: #16241a;
+  --interactive-normal: #4d6651;
+  --interactive-hover: #1f2e22;
+  --interactive-active: #0f1a12;
+  --channel-default: #4d6651;
+  --brand: #3f8a4c;
+  --brand-hover: #33753f;
+  --brand-dim: rgba(63, 138, 76, 0.2);
+  --on-brand: #ffffff;
+  --mention-text: #b84d68;
+  --link: #2f7a8a;
+  --code-bg: #d8ebd4;
+  --spoiler: #8fae8b;
+  --scroll-thumb: #a9c9a4;
+  --shadow: 0 8px 16px rgba(31, 66, 36, 0.12);
+}
+:root[data-palette="frogs"][data-design]:not([data-theme="light"]) {
+  --bg-tertiary: #121a14;
+  --bg-secondary: #19231b;
+  --bg-secondary-alt: #151e17;
+  --bg-primary: #1d281f;
+  --bg-floating: #111813;
+  --bg-modifier-hover: rgba(159, 220, 170, 0.06);
+  --bg-modifier-active: rgba(159, 220, 170, 0.1);
+  --bg-modifier-selected: rgba(159, 220, 170, 0.14);
+  --bg-input: #253128;
+  --bg-message-hover: rgba(159, 220, 170, 0.03);
+  --bg-mention: rgba(244, 166, 186, 0.1);
+  --border-mention: #f4a6ba;
+  --border: #2c3a2f;
+  --text-normal: #e3efe3;
+  --text-muted: #94a996;
+  --text-faint: #6b806e;
+  --header-primary: #f0f8ef;
+  --interactive-normal: #94a996;
+  --interactive-hover: #e3efe3;
+  --channel-default: #8ca08e;
+  --brand: #9fdcaa;
+  --brand-hover: #86cf93;
+  --brand-dim: rgba(159, 220, 170, 0.18);
+  --on-brand: #10301a;
+  --mention-text: #f8c4d1;
+  --link: #8fd3e0;
+  --code-bg: #253128;
+  --spoiler: #111813;
+  --scroll-thumb: #33433a;
+}
+
+/* Овечки — пастельный голубой, почти белый */
+:root[data-palette="sheep"][data-theme="light"] {
+  --bg-tertiary: #dbe6f0;
+  --bg-secondary: #e7eff7;
+  --bg-secondary-alt: #e0e9f3;
+  --bg-primary: #f5f9fd;
+  --bg-floating: #ffffff;
+  --bg-modifier-hover: rgba(52, 84, 120, 0.06);
+  --bg-modifier-active: rgba(52, 84, 120, 0.1);
+  --bg-modifier-selected: rgba(74, 127, 184, 0.16);
+  --bg-input: #ffffff;
+  --bg-message-hover: rgba(52, 84, 120, 0.03);
+  --bg-mention: rgba(74, 127, 184, 0.1);
+  --border-mention: #4a7fb8;
+  --border: #c9d8e6;
+  --text-normal: #1f2a36;
+  --text-muted: #55677a;
+  --text-faint: #7b8a9a;
+  --header-primary: #16202b;
+  --interactive-normal: #55677a;
+  --interactive-hover: #1f2a36;
+  --interactive-active: #0e1620;
+  --channel-default: #55677a;
+  --brand: #4a7fb8;
+  --brand-hover: #3d6c9f;
+  --brand-dim: rgba(74, 127, 184, 0.18);
+  --on-brand: #ffffff;
+  --mention-text: #3d6c9f;
+  --link: #3f78b5;
+  --code-bg: #e7eff7;
+  --spoiler: #a3b3c4;
+  --scroll-thumb: #c2d2e2;
+  --shadow: 0 8px 16px rgba(30, 50, 80, 0.1);
+}
+:root[data-palette="sheep"][data-design]:not([data-theme="light"]) {
+  --bg-tertiary: #13181f;
+  --bg-secondary: #1a2029;
+  --bg-secondary-alt: #161c24;
+  --bg-primary: #1e252f;
+  --bg-floating: #12171d;
+  --bg-modifier-hover: rgba(198, 220, 242, 0.05);
+  --bg-modifier-active: rgba(198, 220, 242, 0.09);
+  --bg-modifier-selected: rgba(198, 220, 242, 0.13);
+  --bg-input: #27303b;
+  --bg-message-hover: rgba(198, 220, 242, 0.025);
+  --bg-mention: rgba(198, 220, 242, 0.08);
+  --border-mention: #c6dcf2;
+  --border: #2b3440;
+  --text-normal: #e6edf5;
+  --text-muted: #96a3b2;
+  --text-faint: #6c7988;
+  --header-primary: #f4f8fc;
+  --interactive-normal: #96a3b2;
+  --interactive-hover: #e6edf5;
+  --channel-default: #8e9bab;
+  --brand: #c6dcf2;
+  --brand-hover: #aecbea;
+  --brand-dim: rgba(198, 220, 242, 0.16);
+  --on-brand: #14263a;
+  --mention-text: #dbe9f7;
+  --link: #9cc6f0;
+  --code-bg: #27303b;
+  --spoiler: #12171d;
+  --scroll-thumb: #333d4a;
+}
+
+/* фон экрана входа — в тон палитре */
+:root[data-palette="frogs"] .login {
+  background:
+    radial-gradient(1200px 600px at 10% 0%, rgba(159, 220, 170, 0.35), transparent 60%),
+    radial-gradient(900px 500px at 100% 100%, rgba(244, 166, 186, 0.25), transparent 60%),
+    var(--bg-tertiary);
+}
+:root[data-palette="sheep"] .login {
+  background:
+    radial-gradient(1200px 600px at 10% 0%, rgba(198, 220, 242, 0.4), transparent 60%),
+    radial-gradient(900px 500px at 100% 100%, rgba(255, 255, 255, 0.3), transparent 60%),
+    var(--bg-tertiary);
+}
