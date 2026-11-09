@@ -1,2 +1,2 @@
-# скрипты для bash — всегда LF, иначе на Windows-checkout bash спотыкается о 
+# скрипты для bash — всегда LF, иначе после checkout на Windows bash спотыкается о CR
 *.sh text eol=lf
