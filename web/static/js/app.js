@@ -11,7 +11,7 @@ import { maybeShowWhatsNew } from "./whatsnew.js";
 const DEFAULT_SETTINGS = {
   theme: "dark",
   design: "classic", // classic | graphite2 | islands
-  palette: "default", // default | frogs | sheep — только цвета, поверх дизайна
+  palette: "default", // default | frogs | sheep | beer | arcade — только цвета, поверх дизайна
   inputDevice: "",
   outputDevice: "",
   outputVolume: 100,
@@ -3363,6 +3363,8 @@ const PALETTES = [
   ["default", "Обычная", "Цвета выбранного дизайна."],
   ["frogs", "🐸 Жабки", "Пастельный зелёный. Работает с любым дизайном, в светлой и тёмной теме."],
   ["sheep", "🐑 Овечки", "Пастельный голубой, почти белый. Лучше всего — в светлой теме."],
+  ["beer", "🍺 Пивная", "Тёмное дерево и янтарь, кружка с пеной. Лучше всего — в тёмной теме."],
+  ["arcade", "🕹️ Аркада", "Чёрный с неоном, пиксельный робот, заголовки капсом. Лучше всего — в тёмной теме."],
 ];
 
 const DESIGNS = [

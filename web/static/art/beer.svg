@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 112">
+  <!-- ручка -->
+  <path d="M86 40 h10 a14 14 0 0 1 14 14 v16 a14 14 0 0 1 -14 14 h-10" fill="none" stroke="#5a3a17" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M86 40 h10 a14 14 0 0 1 14 14 v16 a14 14 0 0 1 -14 14 h-10" fill="none" stroke="#f3e7cf" stroke-width="6" stroke-linejoin="round"/>
+  <!-- кружка: контур, пиво -->
+  <rect x="18" y="28" width="72" height="80" rx="9" fill="#5a3a17"/>
+  <rect x="22" y="32" width="64" height="72" rx="6" fill="#f2a72c"/>
+  <rect x="22" y="70" width="64" height="34" rx="6" fill="#d98a14"/>
+  <!-- блики и грани -->
+  <rect x="30" y="40" width="7" height="56" rx="3.5" fill="#ffd47a" opacity="0.8"/>
+  <rect x="48" y="40" width="4" height="56" rx="2" fill="#c47a0e" opacity="0.5"/>
+  <rect x="66" y="40" width="4" height="56" rx="2" fill="#c47a0e" opacity="0.5"/>
+  <!-- пузырьки -->
+  <g fill="#fff3cf" opacity="0.85">
+    <circle cx="58" cy="88" r="2.5"/><circle cx="76" cy="76" r="2"/><circle cx="42" cy="66" r="2"/><circle cx="60" cy="58" r="1.6"/><circle cx="78" cy="52" r="2.4"/>
+  </g>
+  <!-- пена: контур, заливка, потёк -->
+  <g fill="#5a3a17">
+    <circle cx="24" cy="28" r="13"/><circle cx="42" cy="18" r="16"/><circle cx="64" cy="16" r="16"/><circle cx="84" cy="26" r="13"/>
+    <rect x="16" y="26" width="76" height="14" rx="7"/><rect x="69" y="30" width="12" height="26" rx="6"/>
+  </g>
+  <g fill="#fffaf0">
+    <circle cx="24" cy="28" r="10"/><circle cx="42" cy="18" r="13"/><circle cx="64" cy="16" r="13"/><circle cx="84" cy="26" r="10"/>
+    <rect x="19" y="27" width="70" height="10" rx="5"/><rect x="72" y="30" width="6" height="23" rx="3"/>
+  </g>
+  <circle cx="38" cy="14" r="3.5" fill="#fff" />
+</svg>

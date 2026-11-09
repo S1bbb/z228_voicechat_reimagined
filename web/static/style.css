@@ -3665,7 +3665,7 @@ mark {
     var(--bg-tertiary);
 }
 
-/* ---------- жабки и овечки: картинки (web/static/art) ---------- */
+/* ---------- картинки палитр (web/static/art): жабки, овечки, пиво, аркада ---------- */
 
 :root[data-palette="frogs"] {
   --mascot: url("/art/frog.svg");
@@ -3678,15 +3678,27 @@ mark {
   --mascot-peek: -46px; /* у овечки глаза ниже — выглядывает сильнее */
 }
 
+/* пиво и аркада */
+:root[data-palette="beer"] {
+  --mascot: url("/art/beer.svg");
+  --mascot-tile: url("/art/beer-tile.svg");
+  --mascot-peek: -30px; /* из-за поля видна пена */
+}
+:root[data-palette="arcade"] {
+  --mascot: url("/art/arcade.svg");
+  --mascot-tile: url("/art/arcade-tile.svg");
+  --mascot-peek: -34px;
+}
+
 /* узор на фоне переписки */
-:root:is([data-palette="frogs"], [data-palette="sheep"]) .messages {
+:root[data-palette]:not([data-palette="default"]) .messages {
   background-image: var(--mascot-tile);
   background-size: 180px 180px;
   background-attachment: local;
 }
 
 /* в приветствии канала вместо решётки — зверь */
-:root:is([data-palette="frogs"], [data-palette="sheep"]) .chat-welcome .welcome-icon {
+:root[data-palette]:not([data-palette="default"]) .chat-welcome .welcome-icon {
   width: 104px;
   height: 96px;
   border-radius: 0;
@@ -3697,7 +3709,7 @@ mark {
 }
 
 /* зверь выглядывает из-за поля ввода */
-:root:is([data-palette="frogs"], [data-palette="sheep"]) .composer-wrap {
+:root[data-palette]:not([data-palette="default"]) .composer-wrap {
   position: relative;
   &::before {
     content: "";
@@ -3719,8 +3731,167 @@ mark {
 }
 
 /* на экране входа — тоже */
-:root:is([data-palette="frogs"], [data-palette="sheep"]) .login-logo {
+:root[data-palette]:not([data-palette="default"]) .login-logo {
   content: var(--mascot);
   width: 104px;
   height: 96px;
+}
+
+/* 🍺 Пивная — тёмное дерево и янтарь */
+:root[data-palette="beer"][data-theme="light"] {
+  --bg-tertiary: #e4cfa6;
+  --bg-secondary: #eedcb8;
+  --bg-secondary-alt: #e8d4ad;
+  --bg-primary: #faf1dd;
+  --bg-floating: #fffaf0;
+  --bg-modifier-hover: rgba(90, 58, 23, 0.07);
+  --bg-modifier-active: rgba(90, 58, 23, 0.12);
+  --bg-modifier-selected: rgba(217, 142, 31, 0.22);
+  --bg-input: #fffaf0;
+  --bg-message-hover: rgba(90, 58, 23, 0.04);
+  --bg-mention: rgba(217, 142, 31, 0.14);
+  --border-mention: #c27a12;
+  --border: #d9bf8f;
+  --text-normal: #2b1d10;
+  --text-muted: #6b5236;
+  --text-faint: #8a7253;
+  --header-primary: #1e1206;
+  --interactive-normal: #6b5236;
+  --interactive-hover: #2b1d10;
+  --interactive-active: #120a03;
+  --channel-default: #6b5236;
+  --brand: #d98e1f;
+  --brand-hover: #c27a12;
+  --brand-dim: rgba(217, 142, 31, 0.22);
+  --on-brand: #1e1206;
+  --mention-text: #8a4f06;
+  --link: #9a5b0e;
+  --code-bg: #eedcb8;
+  --spoiler: #a88f70;
+  --scroll-thumb: #cfb27e;
+  --shadow: 0 8px 16px rgba(60, 35, 10, 0.14);
+}
+:root[data-palette="beer"][data-design]:not([data-theme="light"]) {
+  --bg-tertiary: #160f09;
+  --bg-secondary: #21170e;
+  --bg-secondary-alt: #1c130c;
+  --bg-primary: #281c11;
+  --bg-floating: #140d08;
+  --bg-modifier-hover: rgba(242, 179, 61, 0.06);
+  --bg-modifier-active: rgba(242, 179, 61, 0.1);
+  --bg-modifier-selected: rgba(242, 179, 61, 0.15);
+  --bg-input: #35261a;
+  --bg-message-hover: rgba(242, 179, 61, 0.03);
+  --bg-mention: rgba(242, 179, 61, 0.1);
+  --border-mention: #f2b33d;
+  --border: #3d2c1d;
+  --text-normal: #f1e4cf;
+  --text-muted: #b39b7d;
+  --text-faint: #86704f;
+  --header-primary: #fff3df;
+  --interactive-normal: #b39b7d;
+  --interactive-hover: #f1e4cf;
+  --channel-default: #a88f70;
+  --brand: #f2b33d;
+  --brand-hover: #e09a2a;
+  --brand-dim: rgba(242, 179, 61, 0.18);
+  --on-brand: #2a1702;
+  --mention-text: #ffd78a;
+  --link: #f5c26b;
+  --code-bg: #35261a;
+  --spoiler: #140d08;
+  --scroll-thumb: #4a3624;
+}
+:root[data-palette="beer"] .login {
+  background:
+    radial-gradient(1200px 600px at 10% 0%, rgba(242, 179, 61, 0.3), transparent 60%),
+    radial-gradient(900px 500px at 100% 100%, rgba(255, 245, 220, 0.18), transparent 60%),
+    var(--bg-tertiary);
+}
+
+/* 🕹️ Аркада — чёрный с неоном */
+:root[data-palette="arcade"][data-theme="light"] {
+  --bg-tertiary: #d9d5f0;
+  --bg-secondary: #e6e3f8;
+  --bg-secondary-alt: #dfdbf4;
+  --bg-primary: #f6f4ff;
+  --bg-floating: #ffffff;
+  --bg-modifier-hover: rgba(40, 30, 100, 0.06);
+  --bg-modifier-active: rgba(40, 30, 100, 0.1);
+  --bg-modifier-selected: rgba(196, 18, 159, 0.14);
+  --bg-input: #ffffff;
+  --bg-message-hover: rgba(40, 30, 100, 0.03);
+  --bg-mention: rgba(10, 159, 196, 0.1);
+  --border-mention: #0a9fc4;
+  --border: #c8c2e8;
+  --text-normal: #1a1636;
+  --text-muted: #555080;
+  --text-faint: #7a76a0;
+  --header-primary: #100c2a;
+  --interactive-normal: #555080;
+  --interactive-hover: #1a1636;
+  --interactive-active: #08061a;
+  --channel-default: #555080;
+  --brand: #c4129f;
+  --brand-hover: #a30e84;
+  --brand-dim: rgba(196, 18, 159, 0.16);
+  --on-brand: #ffffff;
+  --mention-text: #0a7c9a;
+  --link: #0a7c9a;
+  --success: #0f9d58;
+  --code-bg: #e6e3f8;
+  --spoiler: #9a94c8;
+  --scroll-thumb: #bdb6e4;
+  --shadow: 0 8px 16px rgba(30, 20, 80, 0.14);
+}
+:root[data-palette="arcade"][data-design]:not([data-theme="light"]) {
+  --bg-tertiary: #07060f;
+  --bg-secondary: #0e0c1d;
+  --bg-secondary-alt: #0b0a18;
+  --bg-primary: #120f26;
+  --bg-floating: #08071a;
+  --bg-modifier-hover: rgba(61, 242, 255, 0.06);
+  --bg-modifier-active: rgba(61, 242, 255, 0.1);
+  --bg-modifier-selected: rgba(255, 43, 214, 0.16);
+  --bg-input: #1b1738;
+  --bg-message-hover: rgba(61, 242, 255, 0.03);
+  --bg-mention: rgba(61, 242, 255, 0.1);
+  --border-mention: #3df2ff;
+  --border: #2a2350;
+  --text-normal: #e8e6ff;
+  --text-muted: #9a94c8;
+  --text-faint: #6c66a0;
+  --header-primary: #ffffff;
+  --interactive-normal: #9a94c8;
+  --interactive-hover: #e8e6ff;
+  --channel-default: #8f89c0;
+  --brand: #ff2bd6;
+  --brand-hover: #ff5be0;
+  --brand-dim: rgba(255, 43, 214, 0.18);
+  --on-brand: #1a0016;
+  --mention-text: #7ffcff;
+  --link: #3df2ff;
+  --success: #39ff88;
+  --code-bg: #1b1738;
+  --spoiler: #08071a;
+  --scroll-thumb: #2f2860;
+}
+:root[data-palette="arcade"] .login {
+  background:
+    radial-gradient(1200px 600px at 10% 0%, rgba(255, 43, 214, 0.28), transparent 60%),
+    radial-gradient(900px 500px at 100% 100%, rgba(61, 242, 255, 0.24), transparent 60%),
+    var(--bg-tertiary);
+}
+/* аркадные заголовки: моноширинный шрифт капсом, в тёмной теме — неоновое свечение */
+:root[data-palette="arcade"] :is(.chat-welcome h1, .login-brand, .main-header h2, .category) {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+:root[data-palette="arcade"]:not([data-theme="light"]) :is(.chat-welcome h1, .login-brand) {
+  color: #fff;
+  text-shadow: 0 0 6px rgba(255, 43, 214, 0.9), 0 0 18px rgba(255, 43, 214, 0.5);
+}
+:root[data-palette="arcade"]:not([data-theme="light"]) .channel.selected {
+  box-shadow: inset 2px 0 0 #3df2ff;
 }
