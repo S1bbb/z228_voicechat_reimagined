@@ -185,15 +185,23 @@ export class Voice {
   async processMic(raw) {
     const s = this.settings;
     const plain = { raw, stream: raw, track: raw.getAudioTracks()[0] || null, close: null, chain: null };
-    if ((!s.rnnoise && !s.gate && !needsFilter(s.voiceFilter)) || !noiseSuppressionSupported()) return plain;
+    const gain = s.inputVolume ?? 100;
+    if ((!s.rnnoise && !s.gate && !needsFilter(s.voiceFilter) && gain === 100) || !noiseSuppressionSupported()) return plain;
     try {
-      const chain = await buildMicChain(raw, { rnnoise: s.rnnoise, gate: s.gate, thresholdDb: s.gateDb, filter: s.voiceFilter });
+      const chain = await buildMicChain(raw, { rnnoise: s.rnnoise, gate: s.gate, thresholdDb: s.gateDb, filter: s.voiceFilter, gain });
       return { raw, stream: chain.stream, track: chain.track, close: chain.close, chain };
     } catch (e) {
       console.warn("mic chain", e);
       this.hooks.onError("Обработка голоса (шумодав, гейт, фильтр) не запустилась в этом браузере — голос идёт как есть.");
       return plain;
     }
+  }
+
+  /** Громкость микрофона: на лету, если цепочка обработки уже есть; иначе перезапуск микрофона с цепочкой. */
+  setInputVolume(pct) {
+    this.settings.inputVolume = pct;
+    if (this.mic && this.mic.chain) this.mic.chain.setGain(pct);
+    else if (this.mic && pct !== 100) this.restartMic();
   }
 
   /** Порог гейта меняем на лету, без перезапуска микрофона. */
@@ -745,7 +753,7 @@ export async function voicePreview(constraints, opts, sinkId) {
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
   let chain;
   try {
-    chain = await buildMicChain(stream, { rnnoise: opts.rnnoise, filter: opts.filter });
+    chain = await buildMicChain(stream, { rnnoise: opts.rnnoise, filter: opts.filter, gain: opts.gain });
   } catch (e) {
     stream.getTracks().forEach((t) => t.stop());
     throw e;

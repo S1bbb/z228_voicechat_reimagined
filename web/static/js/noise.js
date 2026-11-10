@@ -26,6 +26,12 @@ export function noiseSuppressionSupported() {
  * если сам гейт выключен, он всегда открыт и только меряет уровень.
  * Возвращает {stream, track, close(), setThreshold(db), onLevel(cb), measure(ms)}.
  */
+/** Громкость микрофона в процентах (0–200) -> множитель. */
+export function micGainValue(pct) {
+  const v = Number.isFinite(+pct) ? +pct : 100;
+  return Math.max(0, Math.min(200, v)) / 100;
+}
+
 export async function buildMicChain(rawStream, opts = {}) {
   if (!noiseSuppressionSupported()) throw new Error("AudioWorklet не поддерживается");
   const ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
@@ -53,6 +59,11 @@ export async function buildMicChain(rawStream, opts = {}) {
       nodes.push(gateNode);
       tail = tail.connect(gateNode);
     }
+    // громкость микрофона: после гейта (порог гейта не зависит от неё), до фильтра
+    const gainNode = ctx.createGain();
+    gainNode.gain.value = micGainValue(opts.gain);
+    nodes.push(gainNode);
+    tail = tail.connect(gainNode);
     if (needsFilter(opts.filter)) {
       // фильтр — последним: шумодав и гейт работают с настоящим голосом
       const fx = await applyVoiceFilter(ctx, tail, opts.filter);
@@ -84,6 +95,9 @@ export async function buildMicChain(rawStream, opts = {}) {
       track,
       hasGate: !!gateNode,
       resume: () => ctx.resume().catch(() => {}),
+      setGain(pct) {
+        gainNode.gain.setTargetAtTime(micGainValue(pct), ctx.currentTime, 0.02);
+      },
       setThreshold(db) {
         if (gateNode) gateNode.port.postMessage({ thresholdDb: db });
       },

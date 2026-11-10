@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = {
   inputDevice: "",
   outputDevice: "",
   outputVolume: 100,
+  inputVolume: 100,
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
@@ -1573,7 +1574,8 @@ function attachmentsEl(list) {
   const box = h("div.attachments");
   for (const a of list) {
     const mime = a.mime || "";
-    const ratio = a.width && a.height ? { aspectRatio: `${a.width} / ${a.height}`, width: Math.min(420, a.width) + "px" } : {};
+    // ширину берём такую, чтобы при max-height 340px картинка не сплющилась (вертикальные скрины с телефона)
+    const ratio = a.width && a.height ? { aspectRatio: `${a.width} / ${a.height}`, width: Math.round(Math.min(420, a.width, (340 * a.width) / a.height)) + "px" } : {};
     if (mime.startsWith("image/")) {
       const img = h("img.att-image", { src: a.url, alt: a.name, loading: "lazy", style: ratio });
       img.onclick = () => openLightbox(a, img);
@@ -2319,6 +2321,130 @@ function menuItem(label, onclick, { danger = false, check = null, iconName = nul
   );
 }
 
+// ---------- быстрое меню звука: ПКМ по себе внизу слева (и по кнопкам микрофона/звука)
+
+async function audioMenu(e, focus = "") {
+  e.preventDefault();
+  e.stopPropagation();
+  const s = S.settings;
+  let devs = [];
+  try {
+    devs = await navigator.mediaDevices.enumerateDevices();
+  } catch {}
+  const list = (kind, fallback) => [
+    ["", "По умолчанию"],
+    ...devs.filter((d) => d.kind === kind && d.deviceId && d.deviceId !== "default" && d.deviceId !== "communications").map((d, i) => [d.deviceId, d.label || `${fallback} ${i + 1}`]),
+  ];
+  const ins = list("audioinput", "Микрофон");
+  const outs = list("audiooutput", "Динамики");
+  const canSink = "setSinkId" in HTMLMediaElement.prototype;
+  const open = { in: focus === "in", out: focus === "out" };
+  const menu = h("div.ctx-menu.audio-menu");
+
+  const slider = (title, value, onInput, onChange) => {
+    const label = h("label", null, `${title}: ${value}%`);
+    const r = h("input", { type: "range", min: 0, max: 200, step: 5, value });
+    r.oninput = () => {
+      label.textContent = `${title}: ${r.value}%`;
+      onInput(+r.value);
+    };
+    r.onchange = () => onChange(+r.value);
+    return h("div.slider-row", null, label, r);
+  };
+  const devicePicker = (key, title, options, current, onPick) => {
+    const name = (options.find(([v]) => v === current) || options[0])[1];
+    const head = h(
+      "button.menu-item.audio-dev-head" + (open[key] ? ".open" : ""),
+      {
+        onclick: (ev) => {
+          ev.stopPropagation();
+          open[key] = !open[key];
+          draw();
+        },
+      },
+      h("span.audio-dev-text", null, h("span.audio-dev-title", null, title), h("span.audio-dev-name", null, name)),
+      h("span", { html: icon("chevronRight", 16) })
+    );
+    const out = [head];
+    if (open[key]) {
+      out.push(
+        h(
+          "div.audio-dev-list",
+          null,
+          options.map(([v, label]) =>
+            h(
+              "button.menu-item.audio-dev" + (v === current ? ".on" : ""),
+              {
+                onclick: (ev) => {
+                  ev.stopPropagation();
+                  open[key] = false;
+                  onPick(v);
+                  draw();
+                },
+              },
+              h("span", null, label),
+              h("span.audio-radio" + (v === current ? ".on" : ""))
+            )
+          )
+        )
+      );
+    }
+    return out;
+  };
+
+  const draw = () => {
+    menu.innerHTML = "";
+    menu.append(
+      ...devicePicker("in", "Устройство ввода", ins, s.inputDevice, (v) => {
+        s.inputDevice = v;
+        saveSettings();
+        voice.restartMic();
+      }),
+      slider(
+        "Громкость микрофона",
+        s.inputVolume,
+        (v) => voice.mic && voice.mic.chain && voice.setInputVolume(v),
+        (v) => {
+          voice.setInputVolume(v);
+          saveSettings();
+        }
+      ),
+      h("div.menu-sep"),
+      ...(canSink
+        ? devicePicker("out", "Устройство вывода", outs, s.outputDevice, (v) => {
+            s.outputDevice = v;
+            saveSettings();
+            voice.setOutputDevice(v);
+          })
+        : []),
+      slider(
+        "Громкость звука",
+        s.outputVolume,
+        (v) => {
+          s.outputVolume = v;
+          voice.settings = s;
+          voice.applyAllVolumes();
+        },
+        () => saveSettings()
+      ),
+      h("div.menu-sep"),
+      menuItem(S.muted || S.deafened ? "Включить микрофон" : "Выключить микрофон", toggleMute, { iconName: S.muted || S.deafened ? "mic" : "micOff" }),
+      menuItem(S.deafened ? "Включить звук" : "Выключить звук", toggleDeafen, { iconName: S.deafened ? "headphones" : "headphonesOff" }),
+      menuItem("Настройки голоса", () => openSettings("voice"), { iconName: "gear" })
+    );
+  };
+  draw();
+  const anchor = $(".user-panel");
+  const pop = popover(menu, anchor, { side: "top" });
+  pop.classList.add("audio-pop");
+  // при раскрытии списка меню растёт вверх — держим его над панелью
+  new ResizeObserver(() => {
+    if (!pop.isConnected) return;
+    const r = anchor.getBoundingClientRect();
+    pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8) + "px";
+  }).observe(pop);
+}
+
 function userMenuByNick(e, nick) {
   const u = S.users.find((x) => x.nickname === nick);
   userMenu(e, u || { id: "", nickname: nick, offline: true });
@@ -2972,7 +3098,17 @@ async function settingsVoice(c) {
     voice.applyAllVolumes();
   };
   vol.onchange = saveSettings;
-  c.append(h("label.field", null, volLabel, vol));
+  const inVolLabel = h("span", null, `Громкость микрофона: ${s.inputVolume}%`);
+  const inVol = h("input", { type: "range", min: 0, max: 200, step: 5, value: s.inputVolume });
+  inVol.oninput = () => {
+    inVolLabel.textContent = `Громкость микрофона: ${inVol.value}%`;
+    if (voice.mic && voice.mic.chain) voice.setInputVolume(+inVol.value);
+  };
+  inVol.onchange = () => {
+    voice.setInputVolume(+inVol.value);
+    saveSettings();
+  };
+  c.append(h("div.grid2", null, h("label.field", null, volLabel, vol), h("label.field", null, inVolLabel, inVol)));
 
   c.append(h("h3", null, "Проверка микрофона"));
   // индикатор в дБ: шкала от -80 до 0, отметка — порог гейта
@@ -3179,7 +3315,7 @@ async function settingsVoice(c) {
   drawFx();
   const prevBtn = h("button.btn", null, "Послушать себя");
   const startPreview = async () => {
-    stopPreview = await voicePreview({ ...voice.micConstraints(), echoCancellation: true }, { rnnoise: s.rnnoise, filter: s.voiceFilter }, s.outputDevice);
+    stopPreview = await voicePreview({ ...voice.micConstraints(), echoCancellation: true }, { rnnoise: s.rnnoise, filter: s.voiceFilter, gain: s.inputVolume }, s.outputDevice);
     prevBtn.textContent = "Хватит";
     prevBtn.classList.add("btn-primary");
   };
@@ -4495,6 +4631,9 @@ function bindUi() {
   $("#stScreen").onclick = toggleScreen;
   $("#voiceChannelLink").onclick = () => voice.channelId && openStage(voice.channelId);
   $("#meBtn").onclick = (e) => userMenu(e, userById(S.me.id) || { id: S.me.id, nickname: S.me.nickname });
+  $("#meBtn").oncontextmenu = (e) => audioMenu(e);
+  $("#micBtn").oncontextmenu = (e) => audioMenu(e, "in");
+  $("#deafBtn").oncontextmenu = (e) => audioMenu(e, "out");
   $("#pinsBtn").onclick = (e) => {
     e.stopPropagation();
     openPins(e.currentTarget);
