@@ -1,0 +1,6 @@
+[Unit]
+Description=z228 health check (restart if hung)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/z228-health

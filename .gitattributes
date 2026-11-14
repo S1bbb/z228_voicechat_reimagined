@@ -1,2 +1,4 @@
 # скрипты для bash — всегда LF, иначе после checkout на Windows bash спотыкается о CR
 *.sh text eol=lf
+# юниты systemd для VPS — тоже LF
+scripts/vps/* text eol=lf

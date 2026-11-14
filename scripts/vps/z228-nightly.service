@@ -1,0 +1,6 @@
+[Unit]
+Description=z228 nightly restart
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart z228

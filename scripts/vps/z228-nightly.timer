@@ -1,0 +1,10 @@
+[Unit]
+Description=z228 nightly restart at 05:00 Moscow time
+
+[Timer]
+# 02:00 UTC = 05:00 МСК: в это время в голосе обычно никого. Клиенты переподключаются сами за пару секунд.
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=false
+
+[Install]
+WantedBy=timers.target
