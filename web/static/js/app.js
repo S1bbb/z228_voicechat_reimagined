@@ -103,6 +103,8 @@ const voice = new Voice((type, payload) => send(type, payload), {
     renderStage();
   },
   onError: (msg) => toast(msg, "error"),
+  // связь с голосом оборвалась и не восстановилась — тихо заходим в тот же канал заново
+  onRejoin: (id) => rejoinVoice(id),
   volumeKey: (userId) => {
     const u = userById(userId);
     return u ? u.nickname.toLowerCase() : userId;
@@ -300,6 +302,11 @@ function onMessage(m) {
       return;
     case "voice-left":
       if (m.joinId && m.joinId !== voice.joinId) return; // хвост прошлого входа
+      if (m.reconnect && voice.active) {
+        // сервер закрыл соединение из-за сбоя (сменилась сеть, клиент не отвечал) — перезаходим сами
+        voice.rejoin();
+        return;
+      }
       lsSet("z228.voice", 0); // отключил админ или удалили канал — автоматически не возвращаемся
       if (voice.active) {
         voice.leave(false);
@@ -740,6 +747,18 @@ async function joinVoice(id, silent = false) {
   if (!silent) playSfx("join");
   lsSet("z228.voice", id); // после F5 или перезапуска браузера вернёмся сюда же
   send("voice-state", { muted: S.muted, deafened: S.deafened, screen: false });
+}
+
+async function rejoinVoice(id) {
+  if (!S.ready || !channelById(id)) return;
+  try {
+    await voice.join(id, S.me.id);
+  } catch (e) {
+    console.error("voice rejoin", e);
+    return;
+  }
+  send("voice-state", { muted: S.muted, deafened: S.deafened, screen: false });
+  renderAll();
 }
 
 function leaveVoice() {

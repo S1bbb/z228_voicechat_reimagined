@@ -103,11 +103,15 @@ type Peer struct {
 	signal Signal
 
 	serverMuted atomic.Bool // админ заглушил: звук этого участника никому не пересылается
+	lost        atomic.Bool // соединение потеряно (сеть, зависание), а не выход по своей воле — клиенту стоит перезайти
 
 	mu         sync.Mutex
 	closed     bool
 	offering   bool // ждём answer на наш offer
 	needOffer  bool // во время ожидания что-то поменялось — нужен ещё один раунд
+	restartICE bool // следующий offer — с перезапуском ICE (клиент сменил сеть: VPN, Wi-Fi)
+	offerSeq   uint64
+	retries    int // сколько раз подряд offer остался без ответа
 	senders    map[string]*webrtc.RTPSender
 	wantVideo  map[string]bool // какие видеотреки участник сейчас смотрит (ключ "<id>/screen|camera")
 	pendingICE []webrtc.ICECandidateInit
@@ -144,6 +148,7 @@ func (s *SFU) Join(roomID, peerID string, signal Signal, onClosed func()) (*Peer
 		switch st {
 		case webrtc.PeerConnectionStateFailed:
 			log.Printf("RTC %s: соединение не установлено (failed)", peerID)
+			p.lost.Store(true)
 			p.Close()
 		case webrtc.PeerConnectionStateConnected:
 			log.Printf("RTC %s: подключён к %s", peerID, roomID)
@@ -354,9 +359,17 @@ func (p *Peer) negotiate() {
 	}
 	p.offering = true
 	p.needOffer = false
+	restart := p.restartICE
+	p.restartICE = false
+	p.offerSeq++
+	seq := p.offerSeq
 	p.mu.Unlock()
 
-	offer, err := p.pc.CreateOffer(nil)
+	var opts *webrtc.OfferOptions
+	if restart {
+		opts = &webrtc.OfferOptions{ICERestart: true}
+	}
+	offer, err := p.pc.CreateOffer(opts)
 	var gathered <-chan struct{}
 	if err == nil {
 		gathered = webrtc.GatheringCompletePromise(p.pc)
@@ -381,7 +394,55 @@ func (p *Peer) negotiate() {
 		sdp = ld.SDP
 	}
 	p.signal("rtc-offer", map[string]any{"sdp": sdp})
+	time.AfterFunc(answerTimeout, func() { p.answerTimedOut(seq) })
 }
+
+// answerTimeout — сколько ждём answer на offer. Без него один потерянный ответ (упало у клиента,
+// сообщение пропало при переподключении) навсегда останавливал пересогласование: участник
+// переставал слышать новых людей, пока не перезайдёт.
+var answerTimeout = 8 * time.Second
+
+const maxOfferRetries = 3
+
+// answerTimedOut повторно шлёт тот же offer (новый поверх неотвеченного pion выставить не даёт).
+// Клиенту это безопасно: offer он мог не получить, или получил, но ответ потерялся — в обоих
+// случаях он применит его и ответит ещё раз.
+func (p *Peer) answerTimedOut(seq uint64) {
+	p.mu.Lock()
+	if p.closed || !p.offering || p.offerSeq != seq {
+		p.mu.Unlock()
+		return
+	}
+	p.retries++
+	tries := p.retries
+	p.mu.Unlock()
+	ld := p.pc.PendingLocalDescription()
+	if tries > maxOfferRetries || ld == nil {
+		log.Printf("RTC %s: клиент не отвечает на offer (%d повтора) — переподключаем", p.ID, tries-1)
+		p.lost.Store(true)
+		p.Close()
+		return
+	}
+	log.Printf("RTC %s: нет ответа на offer — повтор %d", p.ID, tries)
+	p.signal("rtc-offer", map[string]any{"sdp": ld.SDP})
+	time.AfterFunc(answerTimeout, func() { p.answerTimedOut(seq) })
+}
+
+// RestartICE — клиент сменил сеть: пересогласуем с новыми ICE-учётками, не разрывая звонок.
+func (p *Peer) RestartICE() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.restartICE = true
+	p.mu.Unlock()
+	log.Printf("RTC %s: перезапуск ICE по просьбе клиента", p.ID)
+	p.negotiate()
+}
+
+// Lost — соединение закрыто из-за сбоя (а не выходом), клиенту стоит зайти заново.
+func (p *Peer) Lost() bool { return p.lost.Load() }
 
 // SetServerMuted включает/выключает серверное заглушение микрофона участника.
 func (p *Peer) SetServerMuted(v bool) { p.serverMuted.Store(v) }
@@ -416,18 +477,22 @@ func (p *Peer) SetWantedVideo(keys []string) {
 
 // HandleAnswer — ответ клиента на наш offer.
 func (p *Peer) HandleAnswer(sdp string) error {
-	err := p.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: sdp})
+	if p.pc.SignalingState() != webrtc.SignalingStateHaveLocalOffer {
+		return nil // запоздавший ответ на offer, который уже согласован или переотправлен
+	}
+	if err := p.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: sdp}); err != nil {
+		// скорее всего ответ на прошлый offer, а актуальный ещё в пути; не дождёмся — таймер переотправит
+		return err
+	}
 	p.mu.Lock()
 	p.offering = false
+	p.retries = 0
 	again := p.needOffer
 	pending := p.pendingICE
 	p.pendingICE = nil
 	p.mu.Unlock()
 	for _, c := range pending {
 		_ = p.pc.AddICECandidate(c)
-	}
-	if err != nil {
-		return err
 	}
 	if again {
 		p.negotiate()

@@ -67,6 +67,45 @@ export class Voice {
     this.meterTimer = null;
     this.localAnalyser = null;
     this.myId = "";
+    // восстановление связи: перезапуск ICE, потом перезаход (см. recover)
+    this.recoverTimer = null;
+    this.lastRestart = 0;
+    this.rejoins = 0;
+    // сменилась сеть (включили VPN, переключились на другой Wi-Fi) — сразу перезапускаем ICE,
+    // не дожидаясь, пока браузер поймёт, что старый маршрут умер
+    const netChanged = () => this.pc && this.restartIce("сеть сменилась");
+    window.addEventListener("online", netChanged);
+    if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener("change", netChanged);
+  }
+
+  /** Просим сервер перезапустить ICE (без выхода из канала); если за 12 с не соединились — перезаходим. */
+  restartIce(why) {
+    const pc = this.pc;
+    if (!pc) return;
+    const now = Date.now();
+    if (now - this.lastRestart < 5000) return;
+    this.lastRestart = now;
+    console.info("voice: перезапуск ICE —", why);
+    this.send("rtc-restart", { joinId: this.joinId });
+    clearTimeout(this.recoverTimer);
+    this.recoverTimer = setTimeout(() => {
+      if (this.pc === pc && pc.connectionState !== "connected") this.rejoin();
+    }, 12000);
+  }
+
+  /** Полный перезаход в тот же канал (не больше 3 раз подряд без успешного соединения). */
+  rejoin() {
+    const id = this.channelId;
+    if (!id) return;
+    clearTimeout(this.recoverTimer);
+    if (++this.rejoins > 3) {
+      this.rejoins = 0;
+      this.hooks.onState("failed");
+      this.hooks.onError("Голос не подключается. Если включён VPN — отключите его для этого сервера или перезайдите в канал.");
+      return;
+    }
+    console.info("voice: перезаход в канал, попытка", this.rejoins);
+    if (this.hooks.onRejoin) this.hooks.onRejoin(id);
   }
 
   audioCtx() {
@@ -128,11 +167,23 @@ export class Voice {
     pc.onconnectionstatechange = () => {
       if (this.pc !== pc) return;
       const st = pc.connectionState;
-      if (st === "connected") this.hooks.onState("connected");
-      else if (st === "failed") {
-        this.hooks.onState("failed");
-        this.hooks.onError("Не удалось установить голосовое соединение с сервером. Проверьте, что UDP/TCP-порт голоса открыт.");
-      } else if (st === "disconnected") this.hooks.onState("connecting");
+      if (st === "connected") {
+        clearTimeout(this.recoverTimer);
+        this.rejoins = 0;
+        this.hooks.onState("connected");
+      } else if (st === "failed") {
+        this.hooks.onState("connecting");
+        // уже пробовали перезапуск — сразу перезаходим, иначе сначала перезапуск ICE
+        if (Date.now() - this.lastRestart < 15000) this.rejoin();
+        else this.restartIce("failed");
+      } else if (st === "disconnected") {
+        this.hooks.onState("connecting");
+        // кратковременные просадки браузер переживает сам; не вернулось за 2 с — перезапускаем
+        clearTimeout(this.recoverTimer);
+        this.recoverTimer = setTimeout(() => {
+          if (this.pc === pc && pc.connectionState !== "connected") this.restartIce("disconnected");
+        }, 2000);
+      }
     };
     this.startMeters();
     this.send("voice-join", { channelId, joinId });
@@ -236,6 +287,8 @@ export class Voice {
 
   leave(notify = true) {
     if (notify && this.pc) this.send("voice-leave", {});
+    clearTimeout(this.recoverTimer);
+    if (notify) this.rejoins = 0;
     if (this.pc) {
       try {
         this.pc.close();

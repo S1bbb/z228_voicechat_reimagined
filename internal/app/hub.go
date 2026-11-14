@@ -785,6 +785,18 @@ func (h *Hub) handle(s *session, m *inMsg) {
 			}
 		}
 
+	case "rtc-restart":
+		// клиент сменил сеть (VPN, Wi-Fi) или голос отвалился — перезапуск ICE без выхода из канала
+		h.mu.Lock()
+		peer := s.peer
+		if m.JoinID != s.joinID {
+			peer = nil
+		}
+		h.mu.Unlock()
+		if peer != nil {
+			peer.RestartICE()
+		}
+
 	case "rtc-candidate":
 		h.mu.Lock()
 		peer := s.peer
@@ -898,7 +910,8 @@ func (h *Hub) voiceJoin(s *session, channelID int64, joinID string) {
 		}
 		h.mu.Unlock()
 		if changed {
-			s.send("voice-left", map[string]any{"joinId": joinID})
+			// lost: связь оборвалась (сменилась сеть, клиент завис) — клиент перезайдёт сам
+			s.send("voice-left", map[string]any{"joinId": joinID, "reconnect": peer.Lost()})
 			h.trackVoice(s, 0)
 			h.broadcastPresence()
 		}
