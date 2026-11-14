@@ -4462,8 +4462,20 @@ function desktopAppDialog() {
     const inp = h("input.input", { readonly: true, value: str, style: { flex: "1", height: "32px", fontSize: "13px" }, onclick: (e) => e.target.select() });
     inviteBox.append(
       h("div.small", { style: { fontWeight: 600, marginBottom: "6px" } }, "Строка для входа в приложение"),
-      h("div", { style: { display: "flex", gap: "8px" } }, inp, h("button.btn.btn-sm", { onclick: () => copyText(str, "Строка скопирована — вставьте её в приложение.") }, "Копировать")),
-      h("p.muted.small", { style: { margin: "6px 0 0" } }, "Приложение спросит её при первом запуске. В ней адрес сервера, отпечаток его сертификата и ваш ключ — никому не пересылайте.")
+      h(
+        "div",
+        { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+        inp,
+        h("button.btn.btn-sm", { onclick: () => copyText(str, "Строка скопирована — вставьте её в приложение.") }, "Копировать"),
+        // ссылка z228:// открывает установленное приложение с уже вставленной строкой
+        h("a.btn.btn-sm.btn-primary", { href: str, style: { textDecoration: "none", display: "inline-flex", alignItems: "center" } }, "Открыть в приложении")
+      ),
+      h(
+        "p.muted.small",
+        { style: { margin: "6px 0 0" } },
+        "Установили приложение — нажмите «Открыть в приложении», строка подставится сама. Если браузер ничего не открыл, скопируйте строку и вставьте её при первом запуске. " +
+          "В ней адрес сервера, отпечаток его сертификата и ваш ключ — никому не пересылайте."
+      )
     );
   };
   if (S.ready) {

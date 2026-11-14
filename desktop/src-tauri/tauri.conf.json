@@ -26,12 +26,18 @@
       },
       "nsis": {
         "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "../installer/header.bmp",
+        "sidebarImage": "../installer/sidebar.bmp",
         "languages": ["Russian", "English"],
         "displayLanguageSelector": false
       }
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["z228"] }
+    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcyQTEwQ0E3Mjc0NDNCM0IKUldRN08wUW5wd3loY2djNTVORFVON3hsMG5FeHY4ZmJxbmF2YitGa2R3Q2RleVJPNVViVHVPeDYK",
       "endpoints": ["https://github.com/S1bbb/z228_voicechat_reimagined/releases/latest/download/latest.json"],

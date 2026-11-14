@@ -151,6 +151,14 @@
         accent-color: var(--brand);
         cursor: pointer;
       }
+      .note {
+        padding: 10px 12px;
+        border-radius: 6px;
+        background: rgba(34, 211, 238, 0.08);
+        border-left: 4px solid var(--brand);
+        font-size: 13px;
+        color: var(--muted);
+      }
       [hidden] {
         display: none !important;
       }
@@ -174,6 +182,8 @@
       <div class="row" id="retryRow" hidden>
         <button class="primary" id="retry">Повторить</button>
       </div>
+
+      <p class="note" id="linkNote" hidden>Строка пришла по ссылке. Подключайтесь, только если знаете этот сервер и доверяете тому, кто прислал ссылку.</p>
 
       <form id="form" autocomplete="off">
         <label>
@@ -205,6 +215,8 @@
       const $ = (id) => document.getElementById(id);
       let retryTimer = 0;
       let shortcutTouched = false;
+      // открыли по ссылке при уже настроенном сервере: «Отмена» возвращает на него, а не закрывает приложение
+      let backToSaved = false;
 
       function showError(text, warn) {
         $("error").hidden = !text;
@@ -215,10 +227,22 @@
       window.loadStatus = async function () {
         const st = await invoke("connect_status");
         $("version").textContent = "ZALUPA228 Desktop " + st.version;
-        $("quit").textContent = st.hasMain && !st.error ? "Отмена" : "Выход";
+        backToSaved = !!(st.invite && st.server && !st.hasMain && !st.error);
+        $("quit").textContent = (st.hasMain && !st.error) || backToSaved ? "Отмена" : "Выход";
         if (st.server) {
           $("title").textContent = st.error ? st.name || st.server : "Сменить сервер";
           $("subtitle").textContent = st.error ? st.server : "Сейчас: " + (st.name ? st.name + " · " : "") + st.server;
+        }
+        $("linkNote").hidden = !st.invite;
+        if (st.invite) {
+          // пришло по ссылке z228:// — строка уже вставлена, осталось подтвердить
+          $("invite").value = st.invite;
+          $("extra").open = false;
+          $("title").textContent = "Приглашение на сервер";
+          $("subtitle").textContent = (st.inviteName ? st.inviteName + " · " : "") + (st.inviteAddr || "");
+          if (st.server && st.server !== st.inviteAddr) $("subtitle").textContent += " (сейчас: " + (st.name || st.server) + ")";
+          st.error = null;
+          st.retry = false;
         }
         $("shortcutRow").hidden = !st.shortcut;
         if (st.shortcut && !shortcutTouched) $("shortcut").checked = st.shortcutDefault;
@@ -227,7 +251,8 @@
         clearInterval(retryTimer);
         // сервер просто недоступен — пробуем сами, пока окно открыто
         if (st.retry) retryTimer = setInterval(() => retry(true), 15000);
-        if (!st.error) setTimeout(() => $("invite").focus());
+        if (st.invite) setTimeout(() => $("go").focus());
+        else if (!st.error) setTimeout(() => $("invite").focus());
       };
 
       async function retry(silent) {
@@ -268,7 +293,17 @@
           $("go").textContent = "Подключиться";
         }
       };
-      $("quit").onclick = () => invoke("connect_quit");
+      $("quit").onclick = async () => {
+        if (!backToSaved) return invoke("connect_quit");
+        $("quit").disabled = true;
+        try {
+          await invoke("connect_retry");
+        } catch (e) {
+          showError(String(e), true);
+          $("retryRow").hidden = false;
+        }
+        $("quit").disabled = false;
+      };
 
       document.addEventListener("contextmenu", (e) => {
         if (!e.target.closest("textarea, input")) e.preventDefault();

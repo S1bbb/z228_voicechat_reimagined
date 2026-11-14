@@ -1,0 +1,49 @@
+name: desktop-check
+
+# Проверка десктопа без релиза: тесты и сборка установщика на каждый пуш в desktop/.
+# Готовый установщик лежит в артефактах запуска (Actions → запуск → Artifacts) — его можно скачать и проверить.
+on:
+  push:
+    # любая ветка: можно проверить установщик до слияния в main
+    paths: ["desktop/**", ".github/workflows/desktop-check.yml"]
+  pull_request:
+    paths: ["desktop/**"]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - name: Зависимости
+        working-directory: desktop
+        run: npm ci
+
+      - name: Тесты
+        working-directory: desktop/src-tauri
+        run: cargo test --locked
+
+      # без ключа подписи обновлений: файлы для автообновления здесь не нужны
+      - name: Сборка установщика
+        working-directory: desktop
+        shell: bash
+        run: npx tauri build --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          retention-days: 14

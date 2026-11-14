@@ -12,6 +12,7 @@ use std::time::Duration;
 use tauri::ipc::CapabilityBuilder;
 use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 
 use crate::config::{self, Config, ACTIONS};
@@ -62,6 +63,8 @@ pub struct AppState {
     pub caps: Mutex<HashSet<String>>,
     pub origin: Mutex<Option<Origin>>,
     pub mismatch: AtomicBool,
+    /// Приглашение из ссылки z228://, которое ждёт подтверждения в окне входа.
+    pub pending_invite: Mutex<Option<String>>,
 }
 
 fn state(app: &AppHandle) -> tauri::State<'_, AppState> {
@@ -204,6 +207,26 @@ pub fn open_main(app: &AppHandle, key: Option<String>) {
             eprintln!("webview2 install: {e}");
         }
     }
+}
+
+/// Ссылка-приглашение z228://… из аргументов запуска (так её передаёт Windows по клику на ссылку).
+pub fn invite_arg<S: AsRef<str>>(args: impl IntoIterator<Item = S>) -> Option<String> {
+    args.into_iter()
+        .skip(1)
+        .map(|a| a.as_ref().trim().to_string())
+        .find(|a| a.len() <= 4096 && a.get(..7).map(|p| p.eq_ignore_ascii_case("z228://")).unwrap_or(false))
+}
+
+/// Клик по ссылке z228://: показываем окно входа с заполненной строкой.
+/// Сами не подключаемся — ссылку может подсунуть любой сайт, сервер должен подтвердить человек.
+pub fn open_invite_link(app: &AppHandle, link: String) {
+    if let Err(e) = invite::parse(&link, "") {
+        notify(app, &format!("Ссылка-приглашение не подошла: {e}"));
+        return show_main_or_connect(app);
+    }
+    debug_log("invite link received");
+    *state(app).pending_invite.lock().unwrap() = Some(link);
+    show_connect(app, None);
 }
 
 /// Сертификат сервера перестал совпадать с пином (вызывается из обработчика WebView2).
@@ -399,7 +422,12 @@ fn connect_status(app: AppHandle) -> Value {
     let s = state(&app);
     let c = s.cfg.lock().unwrap().clone();
     let err = s.connect_error.lock().unwrap().clone();
+    let invite = s.pending_invite.lock().unwrap().take();
+    let parsed = invite.as_deref().and_then(|i| invite::parse(i, "").ok());
     json!({
+        "invite": invite,
+        "inviteAddr": parsed.as_ref().map(|i| i.addr()),
+        "inviteName": parsed.and_then(|i| i.name),
         "error": err.as_ref().map(|e| e.0.clone()),
         "retry": err.map(|e| e.1).unwrap_or(false),
         "server": c.server,
@@ -475,7 +503,11 @@ fn connect_quit(app: AppHandle) {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_or_connect(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| match invite_arg(&args) {
+            Some(link) => open_invite_link(app, link),
+            None => show_main_or_connect(app),
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
@@ -527,11 +559,20 @@ pub fn run() {
                 caps: Mutex::new(HashSet::new()),
                 origin: Mutex::new(None),
                 mismatch: AtomicBool::new(false),
+                pending_invite: Mutex::new(None),
             });
+            // установщик сам регистрирует z228://; повторяем на случай переноса exe или отладочной сборки
+            #[cfg(windows)]
+            if let Err(e) = handle.deep_link().register_all() {
+                eprintln!("deep-link: {e}");
+            }
             let (icon, menu) = tray::build(&handle)?;
             *state(&handle).tray.lock().unwrap() = Some((icon, menu, Look::Idle, String::new()));
             update_tray(&handle, &PageState::default());
-            start_with_saved_server(&handle);
+            match invite_arg(std::env::args()) {
+                Some(link) => open_invite_link(&handle, link),
+                None => start_with_saved_server(&handle),
+            }
             update::spawn_loop(handle);
             Ok(())
         })
@@ -562,4 +603,18 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("ZALUPA228");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::invite_arg;
+
+    #[test]
+    fn invite_from_args() {
+        assert_eq!(invite_arg(["app.exe", "z228://203.0.113.10:3443/?k=abcd"]).as_deref(), Some("z228://203.0.113.10:3443/?k=abcd"));
+        assert_eq!(invite_arg(["app.exe", "Z228://host:1/"]).as_deref(), Some("Z228://host:1/"));
+        assert_eq!(invite_arg(["z228://exe-path-is-skipped"]), None);
+        assert_eq!(invite_arg(["app.exe", "--flag", "https://x/"]), None);
+        assert_eq!(invite_arg(["app.exe"]), None);
+    }
 }
